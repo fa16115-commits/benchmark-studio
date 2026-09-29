@@ -1,0 +1,3 @@
+{
+  "rewrites": [{ "source": "/", "destination": "/preview/benchmark-studio-preview.html" }]
+}
