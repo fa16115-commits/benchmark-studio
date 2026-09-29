@@ -1,0 +1,14 @@
+services:
+  - type: web
+    name: benchmark-studio
+    runtime: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: python app/server.py
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.12.7
+      - key: RENDER
+        value: "1"
+      - key: ANTHROPIC_API_KEY
+        sync: false

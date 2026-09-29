@@ -721,7 +721,8 @@ def main():
     exe("UPDATE research_tasks SET status='not_started' WHERE status='running'")
     port = int(os.environ.get("PORT", 8765))
     print(f"Benchmarking platform on http://localhost:{port}  (AI: {'LIVE ' + ai.status()['model'] if ai.status()['live'] else 'DEMO mode'})")
-    ThreadingHTTPServer(("127.0.0.1", port), Handler).serve_forever()
+    host = os.environ.get("HOST", "0.0.0.0" if os.environ.get("RENDER") else "127.0.0.1")
+    ThreadingHTTPServer((host, port), Handler).serve_forever()
 
 
 if __name__ == "__main__":
