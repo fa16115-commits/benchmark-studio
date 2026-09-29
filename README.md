@@ -30,7 +30,7 @@ The front end talks only to the JSON API under `/api/*`, and the user is passed 
 To embed the platform in another system, reuse the API and replace that header with the host platform's SSO.
 
 ## Hosting
-- **Vercel** (free): serves the read-only preview (`vercel.json` rewrites `/` to it). Import the repo and deploy.
+- **Vercel** (free): serves the read-only preview (`preview/index.html`, static only; `.vercelignore` excludes the Python app). Import the repo and deploy.
 - **Render** (free web service): runs the full platform from `render.yaml` (New → Blueprint → this repo).
   The free instance sleeps when idle and its disk is ephemeral, so the demo database is re-seeded on each restart.
   Add `ANTHROPIC_API_KEY` in the Render dashboard to switch from demo mode to live Claude research.
