@@ -1,11 +1,15 @@
-"""Comparison matrix and weighted scoring (DESIGN.md §4).
+"""Comparison matrix and (optional) weighted scoring (DESIGN.md §4).
 
 Unknown is never 0: it is excluded from the denominator and lowers coverage.
 Quantitative cells score only when all 4 comparability checks pass.
+Scores are produced only for scorable criteria and never when the analysis method is qualitative —
+numeric scoring is not forced where it is inappropriate.
 """
-from db import q, jl
+from db import q, one, jl
+from method import scorable
 
 COVERAGE_THRESHOLD = 0.6
+MIN_SCORED = 2  # a composite built on a single indicator is not meaningful
 COMPARABILITY_CHECKS = ["definition", "period", "unit", "denominator"]
 
 
@@ -20,6 +24,9 @@ def matrix(eid):
               "LEFT JOIN questions qu ON qu.criterion_id=c.id JOIN dimensions d ON d.id=c.dimension_id "
               "WHERE c.engagement_id=? ORDER BY d.sort, d.id, c.sort, c.id", (eid,))
     comps = q("SELECT * FROM comparators WHERE engagement_id=? AND status='approved' ORDER BY id", (eid,))
+    method = (one("SELECT analysis_method FROM engagements WHERE id=?", (eid,)) or {}).get("analysis_method") or "mixed"
+    for c in crits:
+        c["is_scored"] = bool(scorable(c, method))
     tasks = {(t["comparator_id"], t["question_id"]): t
              for t in q("SELECT * FROM research_tasks WHERE engagement_id=?", (eid,))}
 
@@ -31,10 +38,21 @@ def matrix(eid):
             t = tasks.get((p["id"], c["question_id"]))
             cell = {"task_id": t["id"] if t else None, "status": t["status"] if t else "not_started",
                     "sufficiency": t["sufficiency"] if t else None, "display": "—", "norm": None,
-                    "comparable": None}
+                    "comparable": None, "tone": None}
             if t and t["status"] == "complete":
                 at = c["assessment_type"]
-                if at == "rating" and t["rating"] is not None:
+                yn = t["checklist"] if t["checklist"] in ("yes", "no") else None
+                if at == "common_practice" and yn:
+                    cell["display"] = "Present" if yn == "yes" else "Not evident"
+                    cell["tone"] = "pos" if yn == "yes" else "neutral"
+                elif at == "leading_practice" and yn:
+                    cell["display"] = "★ Leading practice" if yn == "yes" else "—"
+                    cell["tone"] = "pos" if yn == "yes" else None
+                elif at == "comparison":
+                    txt = (t["draft_response"] or "").split(". ")[0]
+                    cell["display"] = (txt[:70] + "…") if len(txt) > 70 else (txt or "Assessed")
+                    cell["text"] = True
+                elif at == "rating" and t["rating"] is not None:
                     cell["display"] = f"{t['rating']:g}/4"
                     cell["norm"] = float(t["rating"]) / 4
                 elif at == "checklist" and t["checklist"] in ("yes", "no"):
@@ -51,8 +69,11 @@ def matrix(eid):
                     cell["display"] = "Unknown"
             elif t and t["status"] == "gap":
                 cell["display"] = "Gap"
+            if not c["is_scored"] and cell["norm"] is not None:  # shown, never scored
+                cell["tone"] = "pos" if cell["norm"] >= .75 else "mid" if cell["norm"] >= .5 else "neutral"
+                cell["norm"] = None
             cells[(c["id"], p["id"])] = cell
-        if raw:  # min-max normalise quantitative values across comparable comparators
+        if raw and c["is_scored"]:  # min-max normalise quantitative values across comparable comparators
             lo, hi = min(raw.values()), max(raw.values())
             for pid, v in raw.items():
                 n = 1.0 if hi == lo else (v - lo) / (hi - lo)
@@ -60,15 +81,15 @@ def matrix(eid):
                     n = 1 - n
                 cells[(c["id"], pid)]["norm"] = n
 
-    scored_types = ("rating", "checklist", "quantitative")
-    total_cells = sum(1 for c in crits if c["assessment_type"] in scored_types) * len(comps)
+    scored = [c for c in crits if c["is_scored"]]
+    total_cells = len(scored) * len(comps)
     comp_scores = {}
     for p in comps:
         dim_scores, filled, possible = [], 0, 0
         for d in dims:
             num = den = 0.0
             for c in crits:
-                if c["dimension_id"] != d["id"] or c["assessment_type"] not in scored_types:
+                if c["dimension_id"] != d["id"] or not c["is_scored"]:
                     continue
                 possible += 1
                 n = cells[(c["id"], p["id"])]["norm"]
@@ -80,11 +101,14 @@ def matrix(eid):
         valid = [(ds["score"], d["weight"]) for ds, d in zip(dim_scores, dims) if ds["score"] is not None]
         coverage = filled / possible if possible else 0
         overall = (round(sum(s * w for s, w in valid) / sum(w for _, w in valid))
-                   if valid and coverage >= COVERAGE_THRESHOLD else None)
+                   if valid and coverage >= COVERAGE_THRESHOLD and len(scored) >= MIN_SCORED else None)
         comp_scores[p["id"]] = {"dimensions": dim_scores, "coverage": round(coverage * 100), "overall": overall}
 
     filled_all = sum(1 for v in cells.values() if v["norm"] is not None)
+    assessed = sum(1 for v in cells.values() if v["status"] in ("complete", "gap"))
     return {
+        "analysis_method": method, "scoring": len(scored) >= MIN_SCORED, "scored_count": len(scored),
+        "assessed_pct": round(assessed / (len(crits) * len(comps)) * 100) if crits and comps else 0,
         "dimensions": dims, "criteria": crits, "comparators": comps,
         "cells": {f"{k[0]}:{k[1]}": v for k, v in cells.items()},
         "scores": comp_scores,

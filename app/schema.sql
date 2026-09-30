@@ -7,6 +7,8 @@ CREATE TABLE IF NOT EXISTS users (
 CREATE TABLE IF NOT EXISTS engagements (
   id INTEGER PRIMARY KEY, code TEXT UNIQUE, title TEXT NOT NULL, client TEXT, sector TEXT,
   objective TEXT, context TEXT, decision_statement TEXT, expected_outcomes TEXT,
+  requirements TEXT, key_questions TEXT, compare_what TEXT,
+  analysis_method TEXT, analysis_rationale TEXT,
   scope TEXT DEFAULT '{}', current_stage INTEGER DEFAULT 0, status TEXT DEFAULT 'active',
   lead_id INTEGER REFERENCES users(id), storyline TEXT,
   created_at TEXT DEFAULT (datetime('now'))
@@ -29,7 +31,8 @@ CREATE TABLE IF NOT EXISTS criteria (
   dimension_id INTEGER REFERENCES dimensions(id) ON DELETE CASCADE,
   name TEXT, description TEXT, assessment_type TEXT DEFAULT 'rating', weight REAL DEFAULT 3,
   direction TEXT DEFAULT 'higher_better', unit TEXT, relevance TEXT, researchability TEXT,
-  comparability TEXT, evidence_risk TEXT, status TEXT DEFAULT 'proposed', sort INTEGER DEFAULT 0
+  comparability TEXT, evidence_risk TEXT, status TEXT DEFAULT 'proposed', sort INTEGER DEFAULT 0,
+  scored INTEGER DEFAULT 1
 );
 
 CREATE TABLE IF NOT EXISTS questions (
@@ -40,7 +43,7 @@ CREATE TABLE IF NOT EXISTS questions (
 
 CREATE TABLE IF NOT EXISTS comparators (
   id INTEGER PRIMARY KEY, engagement_id INTEGER REFERENCES engagements(id) ON DELETE CASCADE,
-  name TEXT, kind TEXT, region TEXT, rationale TEXT, evidence_note TEXT, status TEXT DEFAULT 'proposed'
+  name TEXT, kind TEXT, role TEXT, region TEXT, rationale TEXT, evidence_note TEXT, status TEXT DEFAULT 'proposed'
 );
 
 CREATE TABLE IF NOT EXISTS research_tasks (
@@ -57,7 +60,7 @@ CREATE TABLE IF NOT EXISTS research_tasks (
 CREATE TABLE IF NOT EXISTS evidence (
   id INTEGER PRIMARY KEY, code TEXT, engagement_id INTEGER REFERENCES engagements(id) ON DELETE CASCADE,
   task_id INTEGER REFERENCES research_tasks(id) ON DELETE CASCADE,
-  claim TEXT, summary TEXT, snapshot TEXT, publisher TEXT, title TEXT, pub_date TEXT, url TEXT,
+  claim TEXT, summary TEXT, snapshot TEXT, author TEXT, publisher TEXT, title TEXT, pub_date TEXT, url TEXT,
   locator TEXT, source_category TEXT, priority TEXT, accessibility TEXT, limitations TEXT,
   accessed_at TEXT DEFAULT (date('now')), status TEXT DEFAULT 'pending',
   reviewed_by INTEGER, reviewed_at TEXT, review_comment TEXT, validation TEXT

@@ -11,6 +11,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import ai          # noqa: E402
 import db          # noqa: E402
 import exports     # noqa: E402
+import method as bm  # noqa: E402
 import qa          # noqa: E402
 import scoring     # noqa: E402
 import seed        # noqa: E402
@@ -89,6 +90,8 @@ def gate_check(eid, stage):
                 errs.append(f"{lbl} is required.")
         if not (sc.get("inclusions") or "").strip():
             errs.append("Scope inclusions are required.")
+        if not (e["key_questions"] or "").strip():
+            errs.append("Add at least one key question the client wants answered.")
     elif stage == 1:
         if not st["criteria"]:
             errs.append("The framework has no criteria.")
@@ -100,6 +103,10 @@ def gate_check(eid, stage):
             errs.append("At least 2 approved comparators are required.")
         if one("SELECT COUNT(*) n FROM comparators WHERE engagement_id=? AND status='proposed'", (eid,))["n"]:
             errs.append("Decide on all proposed comparators (approve or reject).")
+        if one("SELECT COUNT(*) n FROM comparators WHERE engagement_id=? AND status='approved' AND (role IS NULL OR role='')", (eid,))["n"]:
+            errs.append("Give every approved benchmark a benchmark role.")
+        if not e["analysis_method"]:
+            errs.append("Select the analysis method (qualitative, quantitative or mixed).")
     elif stage == 2:
         if not st["tasks"]:
             errs.append("No research tasks.")
@@ -118,8 +125,11 @@ def gate_check(eid, stage):
         if not one(f"SELECT COUNT(*) n FROM content_items WHERE engagement_id=? AND status='approved' AND section IN ({','.join('?' * len(secs))})", [eid] + secs)["n"]:
             errs.append("No approved content in this stage.")
     elif stage == 5:
-        if not e["storyline"]:
-            errs.append("Generate and review the storyline first.")
+        for name, secs in exports.REPORT_SECTIONS_REQUIRED:
+            if not one(f"SELECT COUNT(*) n FROM content_items WHERE engagement_id=? AND status='approved' AND section IN ({','.join('?' * len(secs))})", [eid] + secs)["n"]:
+                errs.append(f"Report section “{name}” has no approved content.")
+        if not jl(e["storyline"], {}).get("executive_summary"):
+            errs.append("Draft the executive summary first.")
     elif stage == 6:
         s = qa.run(eid)
         if s["blocking"]:
@@ -147,7 +157,10 @@ def route(method, pattern):
 
 @route("GET", "/api/meta")
 def meta(u, b, qs):
-    return {"users": q("SELECT * FROM users ORDER BY id"), "ai": ai.status(), "stages": STAGES, "perm": {k: sorted(v) for k, v in PERM.items()}}
+    return {"users": q("SELECT * FROM users ORDER BY id"), "ai": ai.status(), "stages": STAGES, "perm": {k: sorted(v) for k, v in PERM.items()},
+            "roles": {k: {"label": v[0], "purpose": v[1]} for k, v in bm.ROLES.items()}, "kinds": bm.KINDS,
+            "assessment": {k: {"label": v[0], "scorable": v[1]} for k, v in bm.ASSESSMENT.items()}, "analysis": bm.ANALYSIS,
+            "report_sections": [x[0] for x in exports.REPORT_OUTLINE]}
 
 
 @route("PUT", "/api/settings")
@@ -200,11 +213,35 @@ def get_eng(u, b, qs, eid):
 def put_eng(u, b, qs, eid):
     need(u, "edit")
     require_open(eid, 0)
-    data = {k: b[k] for k in ("title", "client", "sector", "objective", "context", "decision_statement", "expected_outcomes") if k in b}
+    data = {k: b[k] for k in ("title", "client", "sector", "objective", "context", "decision_statement", "expected_outcomes",
+                              "requirements", "key_questions", "compare_what") if k in b}
     if "scope" in b:
         data["scope"] = json.dumps(b["scope"])
     update("engagements", eid, data)
     audit(u["id"], eid, "brief.edit", ", ".join(data))
+    return {"ok": True}
+
+
+@route("PUT", r"/api/engagements/(\d+)/analysis")
+def put_analysis(u, b, qs, eid):
+    need(u, "edit"); require_open(eid, 1)
+    if b.get("analysis_method") not in bm.ANALYSIS:
+        raise ApiError("Choose qualitative, quantitative or mixed.")
+    e = one("SELECT analysis_method FROM engagements WHERE id=?", (eid,))
+    if e["analysis_method"] and e["analysis_method"] != b["analysis_method"]:
+        insert("feedback", {"engagement_id": eid, "entity_type": "engagement", "entity_id": eid, "kind": "framework_edit",
+                            "before": json.dumps({"analysis_method": e["analysis_method"]}), "after": json.dumps({"analysis_method": b["analysis_method"]}), "user_id": u["id"]})
+    update("engagements", eid, {"analysis_method": b["analysis_method"], **({"analysis_rationale": b["analysis_rationale"]} if "analysis_rationale" in b else {})})
+    audit(u["id"], eid, "framework.analysis_method", b["analysis_method"])
+    return {"ok": True}
+
+
+@route("POST", r"/api/engagements/(\d+)/framework/clear")
+def clear_fw(u, b, qs, eid):
+    need(u, "edit"); require_open(eid, 1)
+    for t in ("questions", "criteria", "dimensions"):
+        exe(f"DELETE FROM {t} WHERE engagement_id=?", (eid,))
+    audit(u["id"], eid, "framework.clear", "Consultant started a blank framework")
     return {"ok": True}
 
 
@@ -336,7 +373,9 @@ def add_crit(u, b, qs, eid):
 def put_crit(u, b, qs, cid):
     c = one("SELECT * FROM criteria WHERE id=?", (cid,))
     need(u, "edit"); require_open(c["engagement_id"], 1)
-    data = {k: b[k] for k in ("name", "description", "assessment_type", "weight", "direction", "unit", "status", "relevance", "researchability", "comparability", "evidence_risk") if k in b}
+    data = {k: b[k] for k in ("name", "description", "assessment_type", "weight", "direction", "unit", "status", "relevance", "researchability", "comparability", "evidence_risk", "scored") if k in b}
+    if "scored" in data:
+        data["scored"] = 1 if data["scored"] in (1, True, "1", "true") else 0
     _fw_feedback(u, c["engagement_id"], "criterion", cid, c, data)
     update("criteria", cid, data)
     if "question" in b or "indicator" in b:
@@ -360,7 +399,7 @@ def del_crit(u, b, qs, cid):
 @route("POST", r"/api/engagements/(\d+)/comparators")
 def add_comp(u, b, qs, eid):
     need(u, "edit"); require_open(eid, 1)
-    return {"id": insert("comparators", {"engagement_id": eid, "name": b.get("name", "New comparator"), "kind": b.get("kind", "organization"),
+    return {"id": insert("comparators", {"engagement_id": eid, "name": b.get("name", "New benchmark"), "kind": b.get("kind", "organization"), "role": b.get("role", "direct"),
                                          "region": b.get("region", ""), "rationale": b.get("rationale", "")})}
 
 
@@ -368,7 +407,7 @@ def add_comp(u, b, qs, eid):
 def put_comp(u, b, qs, pid):
     p = one("SELECT * FROM comparators WHERE id=?", (pid,))
     need(u, "edit"); require_open(p["engagement_id"], 1)
-    data = {k: b[k] for k in ("name", "kind", "region", "rationale", "status") if k in b}
+    data = {k: b[k] for k in ("name", "kind", "role", "region", "rationale", "status") if k in b}
     _fw_feedback(u, p["engagement_id"], "comparator", pid, p, data)
     update("comparators", pid, data)
     return {"ok": True}
@@ -455,7 +494,7 @@ def evidence(u, b, qs, eid):
 def add_evidence(u, b, qs, tid):
     t = one("SELECT * FROM research_tasks WHERE id=?", (tid,))
     need(u, "edit"); require_open(t["engagement_id"], 2)
-    fields = ("claim", "summary", "snapshot", "publisher", "title", "pub_date", "url", "locator", "source_category", "priority", "accessibility", "limitations")
+    fields = ("claim", "summary", "snapshot", "author", "publisher", "title", "pub_date", "url", "locator", "source_category", "priority", "accessibility", "limitations")
     insert("evidence", {**{k: b.get(k) for k in fields}, "code": ai.next_code(t["engagement_id"]), "engagement_id": t["engagement_id"], "task_id": tid})
     if t["status"] in ("not_started", "gap"):
         update("research_tasks", tid, {"status": "drafted"})
@@ -499,10 +538,44 @@ def content(u, b, qs, eid):
     rows = q("SELECT ci.*, p.name comparator, r.name reviewer FROM content_items ci LEFT JOIN comparators p ON p.id=ci.comparator_id "
              "LEFT JOIN users r ON r.id=ci.reviewed_by WHERE ci.engagement_id=? ORDER BY ci.section, ci.comparator_id, ci.id", (eid,))
     ev = {e["code"]: e for e in q("SELECT code, claim, publisher, pub_date, url, status, priority FROM evidence WHERE engagement_id=?", (eid,))}
+    cmap = bm.citations(eid)
     for r in rows:
         r["evidence_ids"] = jl(r["evidence_ids"])
         r["evidence"] = [ev[c] for c in r["evidence_ids"] if c in ev]
+        r["citation"] = bm.intext(r["evidence_ids"], cmap)
     return rows
+
+
+def _approve(u, c, ev_ids=None, ctype=None):
+    """Approval rules shared by single and bulk approval. Returns an error message or None."""
+    ev_ids = jl(c["evidence_ids"]) if ev_ids is None else ev_ids
+    ctype = ctype or c["content_type"]
+    if ctype in ("verified_fact", "benchmark_comparison") and not ev_ids:
+        return "A verified fact or comparison cannot be approved without linked evidence."
+    bad = [x["code"] for x in q(f"SELECT code FROM evidence WHERE engagement_id=? AND status!='accepted' AND code IN ({','.join('?' * len(ev_ids)) or 'NULL'})",
+                                [c["engagement_id"]] + list(ev_ids))]
+    if bad:
+        return f"Linked evidence not accepted: {', '.join(bad)}"
+    return None
+
+
+@route("POST", r"/api/engagements/(\d+)/content/approve-all")
+def approve_all(u, b, qs, eid):
+    need(u, "review_content")
+    secs = b.get("sections") or []
+    for st in {SECTION_STAGE.get(x, 4) for x in secs}:
+        require_open(eid, st)
+    rows = q(f"SELECT * FROM content_items WHERE engagement_id=? AND status IN ('pending','open_gap') AND section IN ({','.join('?' * len(secs)) or 'NULL'})", [eid] + secs)
+    done, skipped = 0, []
+    for c in rows:
+        err = _approve(u, c)
+        if err:
+            skipped.append({"id": c["id"], "title": c["title"], "reason": err})
+            continue
+        update("content_items", c["id"], {"status": "approved", "reviewed_by": u["id"], "reviewed_at": ai._now()})
+        done += 1
+    audit(u["id"], eid, "content.approve_all", f"{done} approved, {len(skipped)} skipped ({', '.join(secs)})")
+    return {"approved": done, "skipped": skipped}
 
 
 @route("POST", r"/api/engagements/(\d+)/content")
@@ -537,12 +610,9 @@ def put_content(u, b, qs, cid):
         ev_ids = b.get("evidence_ids", jl(c["evidence_ids"]))
         ctype = b.get("content_type", c["content_type"])
         if b["status"] == "approved":
-            if ctype in ("verified_fact", "benchmark_comparison") and not ev_ids:
-                raise ApiError("A verified fact or comparison cannot be approved without linked evidence.", 409)
-            bad = [x["code"] for x in q(f"SELECT code FROM evidence WHERE engagement_id=? AND status!='accepted' AND code IN ({','.join('?' * len(ev_ids)) or 'NULL'})",
-                                        [c["engagement_id"]] + list(ev_ids))]
-            if bad:
-                raise ApiError(f"Linked evidence not accepted: {', '.join(bad)}", 409)
+            err = _approve(u, c, ev_ids, ctype)
+            if err:
+                raise ApiError(err, 409)
         data.update(status=b["status"], reviewed_by=u["id"], reviewed_at=ai._now())
     if "in_deliverable" in b:
         data["in_deliverable"] = 1 if b["in_deliverable"] else 0
@@ -578,6 +648,11 @@ def put_story(u, b, qs, eid):
 @route("GET", r"/api/engagements/(\d+)/references")
 def refs(u, b, qs, eid):
     return exports.references(eid)
+
+
+@route("GET", r"/api/engagements/(\d+)/report")
+def report_outline(u, b, qs, eid):
+    return exports.outline(eid)
 
 
 # ---- library, review queue, insights, audit
@@ -670,14 +745,15 @@ class Handler(BaseHTTPRequestHandler):
         path = url.path
         if method == "GET" and not path.startswith("/api/"):
             return self._static(path)
-        m = re.match(r"^/api/engagements/(\d+)/export\.(pptx|xlsx)$", path)
+        m = re.match(r"^/api/engagements/(\d+)/export\.(pptx|xlsx|docx)$", path)
         if m and method == "GET":
             eid, fmt = int(m.group(1)), m.group(2)
             e = one("SELECT code FROM engagements WHERE id=?", (eid,))
-            data = exports.pptx(eid) if fmt == "pptx" else exports.xlsx(eid)
-            ctype = ("application/vnd.openxmlformats-officedocument.presentationml.presentation" if fmt == "pptx"
-                     else "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
-            return self._send(200, data, ctype, {"Content-Disposition": f'attachment; filename="{e["code"]}-{"deliverable" if fmt == "pptx" else "evidence"}.{fmt}"'})
+            data = {"pptx": exports.pptx, "xlsx": exports.xlsx, "docx": exports.docx}[fmt](eid)
+            ctype = {"pptx": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+                     "xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                     "docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document"}[fmt]
+            return self._send(200, data, ctype, {"Content-Disposition": f'attachment; filename="{e["code"]}-{ {"pptx": "deliverable", "xlsx": "evidence", "docx": "report"}[fmt] }.{fmt}"'})
         qs = {k: v[0] for k, v in parse_qs(url.query).items()}
         uid = int(self.headers.get("X-User-Id") or 2)
         user = one("SELECT * FROM users WHERE id=?", (uid,)) or one("SELECT * FROM users WHERE id=2")

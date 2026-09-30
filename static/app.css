@@ -169,3 +169,4 @@ html[dir="rtl"] .drawer{justify-content:flex-start} html[dir="rtl"] .drawer-in{b
 html[dir="rtl"] .brand span, html[dir="rtl"] .navh{letter-spacing:0} html[dir="rtl"] .t th, html[dir="rtl"] .step small{letter-spacing:0}
 html[dir="rtl"] .mono, html[dir="rtl"] pre.prompt, html[dir="rtl"] .ev, html[dir="rtl"] .quote{direction:ltr;text-align:left}
 html[dir="rtl"] .it-x{direction:ltr;text-align:left;unicode-bidi:plaintext}
+html[dir="rtl"] li, html[dir="rtl"] textarea, html[dir="rtl"] input, html[dir="rtl"] .it-t, html[dir="rtl"] td{unicode-bidi:plaintext}

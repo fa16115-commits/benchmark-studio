@@ -15,28 +15,42 @@ PROMPTS = [
     {
         "key": "framework",
         "stage": 1,
-        "title": "01 Framework — Design the benchmark",
+        "title": "01 Framework — Design the benchmark from the consultant's requirements",
         "body": COMMON_RULES + """
 
-ROLE: Benchmarking methodologist.
+ROLE: Benchmarking methodologist. Design a bespoke framework for THIS engagement. Do not apply a generic or predefined model.
 
-STUDY CONTEXT
+CONSULTANT'S REQUIREMENTS
 Client: {{CLIENT}} | Sector: {{SECTOR}}
 Objective: {{OBJECTIVE}}
 Decision the study supports: {{DECISION}}
 Scope: {{SCOPE}}
+Requirements: {{REQUIREMENTS}}
+What needs to be compared: {{COMPARE_WHAT}}
+Key questions the client wants answered:
+{{KEY_QUESTIONS}}
+Benchmarks already named by the consultant (keep them): {{NAMED}}
 
 TASK
-Propose a bespoke benchmarking framework tailored to this engagement (do not apply a generic model):
-1. 3–5 assessment dimensions, each with 2–4 criteria.
-2. For each criterion: assessment type (rating | checklist | quantitative | qualitative), weight (1–5), direction (higher_better | lower_better) and unit for quantitative criteria, and exactly one structured research question with an indicator.
-3. Rate each criterion for relevance, researchability and comparability (High | Medium | Low) and flag the expected evidence risk.
-4. Propose 4–6 candidate comparators (countries, organisations or practices) with a selection rationale and an evidence-availability note.
+1. Recommend the analysis method — qualitative, quantitative or mixed — with a one-paragraph rationale based on the questions and likely data availability.
+2. Propose 3–5 dimensions, each with 2–4 criteria, so that every key question is answered by at least one criterion.
+3. For each criterion choose the most suitable assessment type:
+   comparison (descriptive) | qualitative | checklist | rating (maturity 0–4) | quantitative | common_practice | leading_practice.
+   Set "scored": true only where a numeric score is meaningful and comparable; never force numerical scoring.
+   Give weight (1–5), direction and unit for quantitative criteria, one structured research question, an indicator,
+   relevance / researchability / comparability (High | Medium | Low) and the expected evidence risk.
+4. Recommend 4–8 benchmark subjects. A subject may be a country, government, organization, company, jurisdiction,
+   operating model, program or practice. Give each a benchmark role:
+   direct (highly comparable to the client) | contextual (useful context) | aspirational (a model the client may aspire toward) |
+   leading_practice (demonstrates a specific practice) | jurisdiction (country or regulatory comparison) |
+   cross_industry (transfers a practice from another sector) | practice_model (a particular operating or service model).
+   Explain the selection rationale and expected evidence availability.
 Do NOT produce benchmark findings at this stage.
 
 OUTPUT — return only JSON:
-{"dimensions":[{"name":"","description":"","weight":3,"criteria":[{"name":"","description":"","assessment_type":"rating","weight":3,"direction":"higher_better","unit":"","relevance":"High","researchability":"High","comparability":"Medium","evidence_risk":"","question":"","indicator":""}]}],
- "comparators":[{"name":"","kind":"country","region":"","rationale":"","evidence_note":""}]}""",
+{"analysis_method":"qualitative|quantitative|mixed","analysis_rationale":"",
+ "dimensions":[{"name":"","description":"","weight":3,"criteria":[{"name":"","description":"","assessment_type":"comparison","scored":false,"weight":3,"direction":"higher_better","unit":"","relevance":"High","researchability":"High","comparability":"Medium","evidence_risk":"","question":"","indicator":"","answers_key_question":""}]}],
+ "comparators":[{"name":"","kind":"country|government|organization|company|jurisdiction|operating_model|program|practice","role":"direct|contextual|aspirational|leading_practice|jurisdiction|cross_industry|practice_model","region":"","rationale":"","evidence_note":""}]}""",
     },
     {
         "key": "research",
@@ -57,6 +71,7 @@ Criterion: {{CRITERION}}
 Structured question: {{QUESTION}}
 Indicator: {{INDICATOR}}
 Assessment type: {{ASSESSMENT_TYPE}} {{UNIT}}
+(for CHECKLIST, COMMON_PRACTICE or LEADING_PRACTICE answer "checklist" with yes/no/unknown; for COMPARISON or QUALITATIVE give no score)
 
 SOURCE POLICY (priority order)
 {{SOURCE_RULES}}
@@ -67,7 +82,7 @@ DO NOT use search snippets, AI-generated summaries, anonymous statistics, conten
 
 OUTPUT — return only JSON:
 {"queries":["..."],
- "evidence":[{"claim":"exact claim supported","summary":"what the source says","excerpt":"short verbatim excerpt (<40 words)","publisher":"","title":"","pub_date":"YYYY or YYYY-MM-DD","url":"","locator":"page/section","source_category":"one of the policy categories","priority":"P1|P2|P3|P4|REJECT","accessibility":"Open|Registration|Paywalled","limitations":""}],
+ "evidence":[{"claim":"exact claim supported","summary":"what the source says","excerpt":"short verbatim excerpt (<40 words)","author":"person or organisation credited as author (for APA)","publisher":"","title":"","pub_date":"YYYY or YYYY-MM-DD","url":"","locator":"page/section","source_category":"one of the policy categories","priority":"P1|P2|P3|P4|REJECT","accessibility":"Open|Registration|Paywalled","limitations":""}],
  "draft_response":"concise answer using only the evidence above; label any [Synthesis] or [Interpretation]",
  "rating":"0-4 or null (rating type only)", "checklist":"yes|no|unknown or null", "value":"number or null", "value_unit":"",
  "sufficiency":"sufficient|partial|gap|conflict",
@@ -149,20 +164,24 @@ OUTPUT — return only JSON:
     {
         "key": "deliverable",
         "stage": 5,
-        "title": "05 Deliverable — Storyline and executive summary",
+        "title": "05 Deliverable — Executive summary and conclusions for the standard report",
         "body": COMMON_RULES + """
 
-ROLE: Engagement storyliner. Use ONLY approved content below. Do not introduce new facts, values or sources to strengthen the story.
+ROLE: Engagement storyliner. Use ONLY the approved content below. Do not introduce new facts, values or sources.
 
 ENGAGEMENT: {{TITLE}} for {{CLIENT}}
-APPROVED CONTENT:
+The report always follows this structure: 1 Introduction · 2 Benchmarking Methodology · 3 Benchmark Models ·
+4 Comparative Analysis · 5 Recommendations & Conclusions · 6 References.
+
+APPROVED CONTENT (id | section | type | text | evidence):
 {{CONTENT}}
 
 TASK
-Build a conclusion-led storyline: an executive summary (4–6 bullets) and a slide outline where each slide has an action title (the "so what"), the content item ids it uses and the suggested visual (table, bar chart, heatmap, practice cards).
+Write (a) a conclusion-led executive summary of 4–6 bullets and (b) 3–5 conclusions for section 5.
+Each bullet cites the evidence ids it relies on. Keep synthesis and interpretation labelled.
 
 OUTPUT — return only JSON:
-{"executive_summary":[{"text":"","evidence_ids":[]}],"slides":[{"title":"","message":"","item_ids":[],"visual":""}]}""",
+{"executive_summary":[{"text":"","evidence_ids":[]}],"conclusions":[{"text":"","evidence_ids":[]}]}""",
     },
     {
         "key": "qa",

@@ -60,9 +60,19 @@ def setting(key, default=None):
     return r["value"] if r else default
 
 
+MIGRATIONS = [  # columns added after v1.0 — applied to existing databases
+    ("engagements", "requirements", "TEXT"), ("engagements", "key_questions", "TEXT"), ("engagements", "compare_what", "TEXT"),
+    ("engagements", "analysis_method", "TEXT"), ("engagements", "analysis_rationale", "TEXT"),
+    ("comparators", "role", "TEXT"), ("criteria", "scored", "INTEGER DEFAULT 1"), ("evidence", "author", "TEXT"),
+]
+
+
 def init():
     with open(os.path.join(BASE, "schema.sql"), encoding="utf-8") as f:
         conn().executescript(f.read())
+    for table, col, typ in MIGRATIONS:
+        if col not in {r["name"] for r in q(f"PRAGMA table_info({table})")}:
+            conn().execute(f"ALTER TABLE {table} ADD COLUMN {col} {typ}")
     conn().commit()
 
 

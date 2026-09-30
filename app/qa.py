@@ -17,7 +17,18 @@ RULES = {
     "QA-09": ("major", "Synthesis/interpretation placed in a fact-only section"),
     "QA-10": ("minor", "Research gaps exist but no limitation is disclosed"),
     "QA-11": ("minor", "Evidence older than 5 years (check it is the latest release)"),
+    "QA-12": ("major", "Fact supported only by supporting-grade sources (P3/P4) without a primary source"),
+    "QA-13": ("major", "Cited source cannot form an APA reference (author/publisher, year or title missing)"),
 }
+# The six release checks the consultant reviews (comment 11)
+CATEGORIES = [
+    ("Source credibility", ["QA-03", "QA-12"]),
+    ("Evidence", ["QA-02", "QA-07", "QA-11"]),
+    ("Comparability", ["QA-06"]),
+    ("Citations", ["QA-01", "QA-13"]),
+    ("Analysis", ["QA-08", "QA-09", "QA-10"]),
+    ("Unsupported claims & approval", ["QA-04", "QA-05", "AI-QA"]),
+]
 
 
 def run(eid):
@@ -47,6 +58,12 @@ def run(eid):
             add("QA-04", "content", it["id"], f"{label}: status is {it['status']}")
         if it["section"] == "recommendation" and not it["reviewed_by"]:
             add("QA-05", "content", it["id"], f"{label}: no human reviewer recorded")
+        linked = [ev[c] for c in codes if c in ev and ev[c]["status"] == "accepted"]
+        if it["content_type"] == "verified_fact" and linked and all(e["priority"] in ("P3", "P4") for e in linked):
+            add("QA-12", "content", it["id"], f"{label}: only {', '.join(sorted({e['priority'] for e in linked}))} sources")
+        for e in linked:
+            if not ((e.get("author") or e["publisher"] or "").strip() and re.search(r"(19|20)\d{2}", e["pub_date"] or "") and (e["title"] or "").strip()):
+                add("QA-13", "content", it["id"], f"{label}: {e['code']} lacks author, year or title")
         if it["section"] == "profile" and it["content_type"] in ("ai_synthesis", "ai_interpretation", "client_implication"):
             add("QA-09", "content", it["id"], f"{label}: {it['content_type']} inside a profile (facts only)")
 
@@ -94,4 +111,6 @@ def summary(eid):
         "counts": {s: sum(1 for r in open_ if r["severity"] == s) for s in ("critical", "major", "minor")},
         "blocking": any(r["severity"] == "critical" for r in open_),
         "rules": [{"rule": k, "severity": v[0], "text": v[1]} for k, v in RULES.items()],
+        "categories": [{"name": n, "rules": r, "open": sum(1 for x in open_ if x["rule"] in r),
+                        "critical": sum(1 for x in open_ if x["rule"] in r and x["severity"] == "critical")} for n, r in CATEGORIES],
     }

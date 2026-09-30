@@ -8,6 +8,7 @@ import threading
 import traceback
 
 import demo
+import method
 import scoring
 from db import q, one, exe, insert, update, jl, setting, audit
 
@@ -108,8 +109,11 @@ def job_framework(jid, eid, uid):
     e = one("SELECT * FROM engagements WHERE id=?", (eid,))
     _progress(jid, 0, 1, "Designing framework")
     if status()["live"]:
+        named = ", ".join(p["name"] for p in q("SELECT name FROM comparators WHERE engagement_id=? AND status='approved'", (eid,)))
         text, _ = claude(fill("framework", CLIENT=e["client"], SECTOR=e["sector"], OBJECTIVE=e["objective"],
-                              DECISION=e["decision_statement"], SCOPE=scope_text(e)))
+                              DECISION=e["decision_statement"], SCOPE=scope_text(e), REQUIREMENTS=e["requirements"] or "—",
+                              COMPARE_WHAT=e["compare_what"] or "—", KEY_QUESTIONS=e["key_questions"] or "—",
+                              NAMED=named or "none"))
         fw = parse_json(text)
     else:
         fw = demo.framework({**e, "scope_obj": jl(e["scope"], {})})
@@ -124,11 +128,15 @@ def job_framework(jid, eid, uid):
                                       "description": c.get("description", ""), "assessment_type": c.get("assessment_type", "rating"),
                                       "weight": c.get("weight", 3), "direction": c.get("direction", "higher_better"),
                                       "unit": c.get("unit", ""), "relevance": c.get("relevance"), "researchability": c.get("researchability"),
-                                      "comparability": c.get("comparability"), "evidence_risk": c.get("evidence_risk"), "sort": j})
+                                      "comparability": c.get("comparability"), "evidence_risk": c.get("evidence_risk"), "sort": j,
+                                      "scored": 1 if c.get("scored", c.get("assessment_type") in ("rating", "checklist", "quantitative")) else 0})
             insert("questions", {"engagement_id": eid, "criterion_id": cid, "text": c.get("question", ""), "indicator": c.get("indicator", "")})
     for c in fw.get("comparators", []):
-        insert("comparators", {"engagement_id": eid, "name": c["name"], "kind": c.get("kind"), "region": c.get("region"),
+        insert("comparators", {"engagement_id": eid, "name": c["name"], "kind": c.get("kind") if c.get("kind") in method.KINDS else "organization",
+                               "role": c.get("role") if c.get("role") in method.ROLES else "contextual", "region": c.get("region"),
                                "rationale": c.get("rationale"), "evidence_note": c.get("evidence_note")})
+    if fw.get("analysis_method") in method.ANALYSIS:
+        update("engagements", eid, {"analysis_method": fw["analysis_method"], "analysis_rationale": fw.get("analysis_rationale", "")})
     audit(uid, eid, "ai.framework", f"{len(fw.get('dimensions', []))} dimensions proposed")
     _progress(jid, 1, 1, "Framework proposed")
 
@@ -176,7 +184,7 @@ def research_one(tid, uid):
             val = {"recommendation": "more_research", "reason": "URL was not among the pages returned by web search — open and verify before accepting."}
         insert("evidence", {"code": next_code(t["engagement_id"]), "engagement_id": t["engagement_id"], "task_id": tid,
                             "claim": ev.get("claim"), "summary": ev.get("summary"), "snapshot": ev.get("excerpt"),
-                            "publisher": ev.get("publisher"), "title": ev.get("title"), "pub_date": ev.get("pub_date"),
+                            "author": ev.get("author"), "publisher": ev.get("publisher"), "title": ev.get("title"), "pub_date": ev.get("pub_date"),
                             "url": ev.get("url"), "locator": ev.get("locator"), "source_category": ev.get("source_category"),
                             "priority": (ev.get("priority") or "P3").upper(), "accessibility": ev.get("accessibility"),
                             "limitations": ev.get("limitations"), "validation": json.dumps(val) if val else None})
@@ -259,24 +267,36 @@ def job_benchmark(jid, eid, uid):
 
 
 def comparisons(eid):
+    """Cross-subject comparisons computed from the matrix (never free-written)."""
     m = scoring.matrix(eid)
     n = len(m["comparators"])
-    items = []
-    ev_by_task = {}
+    items, ev_by_task = [], {}
     for x in _accepted_evidence(eid):
         ev_by_task.setdefault(x["task_id"], []).append(x["code"])
     for c in m["criteria"]:
         cells = [(p, m["cells"][f"{c['id']}:{p['id']}"]) for p in m["comparators"]]
-        known = [(p, cl) for p, cl in cells if cl["norm"] is not None]
-        if len(known) < 2:
+        done = [(p, cl) for p, cl in cells if cl["status"] == "complete"]
+        if len(done) < 2:
             continue
-        strong = [demo.short(p["name"]) for p, cl in known if cl["norm"] >= 0.75]
-        codes = sorted({code for _, cl in known for code in ev_by_task.get(cl["task_id"], [])})
-        txt = (f"{len(strong)} of {len(known)} reviewed comparators with evidence show a strong position on {c['name'].lower()}"
-               + (f" ({', '.join(strong)})." if strong else ".")
-               + (f" {n - len(known)} comparator(s) could not be assessed." if n > len(known) else ""))
-        items.append({"section": "comparison", "content_type": "benchmark_comparison",
-                      "title": c["name"], "text": txt, "evidence_ids": codes})
+        codes = sorted({code for _, cl in done for code in ev_by_task.get(cl["task_id"], [])})
+        at, names = c["assessment_type"], lambda xs: ", ".join(demo.short(p["name"]) for p in xs)
+        if at in ("common_practice", "checklist"):
+            yes = [p for p, cl in done if cl["display"] in ("Present", "Yes")]
+            txt = f"{len(yes)} of {len(done)} assessed benchmarks show {c['name'].lower()}" + (f" ({names(yes)})." if yes else ".")
+        elif at == "leading_practice":
+            lead = [p for p, cl in done if cl["tone"] == "pos"]
+            txt = (f"Leading practice in {c['name'].lower()} identified at {names(lead)}." if lead
+                   else f"No leading practice in {c['name'].lower()} identified among {len(done)} assessed benchmarks.")
+        elif at in ("comparison", "qualitative"):
+            txt = f"{c['name']}: approaches differ across the {len(done)} assessed benchmarks — " + "; ".join(
+                f"{demo.short(p['name'])}: {cl['display']}" for p, cl in done[:4]) + "."
+        else:
+            known = [(p, cl) for p, cl in done if cl["norm"] is not None or cl["tone"]]
+            strong = [p for p, cl in known if (cl["norm"] if cl["norm"] is not None else (1 if cl["tone"] == "pos" else 0)) >= .75]
+            txt = f"{len(strong)} of {len(known)} benchmarks with evidence show a strong position on {c['name'].lower()}" + (f" ({names(strong)})." if strong else ".")
+        if n > len(done):
+            txt += f" {n - len(done)} benchmark(s) could not be assessed."
+        items.append({"section": "comparison", "content_type": "benchmark_comparison", "title": c["name"], "text": txt, "evidence_ids": codes})
     return items
 
 
@@ -304,20 +324,25 @@ def demo_synthesis(eid, m, approved):
     items = []
     comps = {c["title"]: c for c in approved if c["section"] == "comparison"}
     for d in m["dimensions"]:
-        scores = [(p, next(s["score"] for s in m["scores"][p["id"]]["dimensions"] if s["dimension_id"] == d["id"])) for p in m["comparators"]]
+        if m["scoring"]:
+            scores = [(p, next(s["score"] for s in m["scores"][p["id"]]["dimensions"] if s["dimension_id"] == d["id"])) for p in m["comparators"]]
+        else:  # qualitative: count positive practice signals instead of scores
+            dcrit = [c for c in m["criteria"] if c["dimension_id"] == d["id"]]
+            scores = [(p, 100 * sum(1 for c in dcrit if m["cells"][f"{c['id']}:{p['id']}"]["tone"] == "pos") / len(dcrit) if dcrit else None)
+                      for p in m["comparators"]]
         scores = [(p, s) for p, s in scores if s is not None]
         if not scores:
             continue
         leaders = [demo.short(p["name"]) for p, s in scores if s >= 70]
         ev = sorted({c for cr in m["criteria"] if cr["dimension_id"] == d["id"] and cr["name"] in comps for c in jl(comps[cr["name"]]["evidence_ids"])})
         items.append({"section": "lesson", "content_type": "ai_synthesis", "title": d["name"],
-                      "text": f"Within the selected comparator set, {len(leaders)} of {len(scores)} assessed comparators score 70+ on {d['name'].lower()}"
+                      "text": f"Within the selected benchmark set, {len(leaders)} of {len(scores)} assessed benchmarks show a strong position on {d['name'].lower()}"
                               + (f" ({', '.join(leaders)})" if leaders else "") + "; leading models combine clear mandates with standardised, measurable services.",
                       "evidence_ids": ev})
         items.append({"section": "lesson", "content_type": "ai_interpretation", "title": f"Why it matters — {d['name']}",
                       "text": f"[Interpretation] Strength in {d['name'].lower()} appears to accompany higher overall maturity; an alternative explanation is that more mature organisations simply disclose more.",
                       "evidence_ids": ev})
-    top = sorted(m["comparators"], key=lambda p: -(m["scores"][p["id"]]["overall"] or 0))[:2]
+    top = sorted(m["comparators"], key=lambda p: -(m["scores"][p["id"]]["overall"] or 0))[:2] if m["scoring"] else m["comparators"][:2]
     gov = [c for t in ("Governance structure", "Service catalogue & SLAs") if t in comps for c in jl(comps[t]["evidence_ids"])]
     items.append({"section": "recommendation", "content_type": "client_implication", "title": "Adopt a tiered delivery model",
                   "text": "Consider a tiered delivery model (self-service, standard processing, expert centres), piloted on high-volume transactional services first.",
@@ -341,23 +366,18 @@ def demo_synthesis(eid, m, approved):
 def job_storyline(jid, eid, uid):
     e = one("SELECT * FROM engagements WHERE id=?", (eid,))
     items = q("SELECT * FROM content_items WHERE engagement_id=? AND status='approved' AND in_deliverable=1", (eid,))
-    _progress(jid, 0, 1, "Building storyline")
+    _progress(jid, 0, 1, "Drafting executive summary and conclusions")
     if status()["live"]:
         text, _ = claude(fill("deliverable", TITLE=e["title"], CLIENT=e["client"],
-                              CONTENT="\n".join(f"#{i['id']} [{i['section']}/{i['content_type']}] {i['title']}: {i['text']} ({','.join(jl(i['evidence_ids']))})" for i in items)))
+                              CONTENT="\n".join(f"#{i['id']} | {i['section']} | {i['content_type']} | {i['title']}: {i['text']} | {','.join(jl(i['evidence_ids']))}" for i in items)))
         story = parse_json(text)
     else:
-        by = lambda s: [i for i in items if i["section"] == s]
-        story = {"executive_summary": [{"text": i["text"], "evidence_ids": jl(i["evidence_ids"])} for i in (by("lesson")[:3] + by("recommendation")[:2])],
-                 "slides": [{"title": "Leading models share clear mandates and measurable services", "message": "Comparison across the approved framework", "item_ids": [i["id"] for i in by("comparison")], "visual": "heatmap"},
-                            *[{"title": f"{demo.short(p['name'])}: model profile", "message": "", "item_ids": [i["id"] for i in items if i["comparator_id"] == p["id"]], "visual": "practice cards"}
-                              for p in q("SELECT * FROM comparators WHERE engagement_id=? AND status='approved'", (eid,))],
-                            {"title": "Lessons learned", "message": "", "item_ids": [i["id"] for i in by("lesson")], "visual": "cards"},
-                            {"title": "Implications for the client", "message": "", "item_ids": [i["id"] for i in by("recommendation")], "visual": "table"},
-                            {"title": "Limitations", "message": "", "item_ids": [i["id"] for i in by("limitation")], "visual": "text"}]}
+        by = lambda sec: [i for i in items if i["section"] == sec]
+        story = {"executive_summary": [{"text": i["text"], "evidence_ids": jl(i["evidence_ids"])} for i in (by("comparison")[:2] + by("lesson")[:2] + by("recommendation")[:2])],
+                 "conclusions": [{"text": i["text"], "evidence_ids": jl(i["evidence_ids"])} for i in by("lesson") if i["content_type"] == "ai_synthesis"][:4]}
     update("engagements", eid, {"storyline": json.dumps(story)})
-    audit(uid, eid, "ai.storyline", "")
-    _progress(jid, 1, 1, "Storyline ready")
+    audit(uid, eid, "ai.storyline", "executive summary and conclusions")
+    _progress(jid, 1, 1, "Executive summary ready")
 
 
 STRONG = re.compile(r"\b(all|always|never|every|best|proven|guarantee[sd]?|universal(ly)?)\b", re.I)

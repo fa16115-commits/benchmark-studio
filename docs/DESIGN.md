@@ -136,3 +136,19 @@ cycle time per stage · gap rate. Shown on the Insights page; feeds prompt impro
 SSO + role-based access; client data isolation per engagement; PDPL alignment; NCA ECC
 controls; data residency (in-Kingdom hosting or zero-retention API terms); API keys in a vault;
 full audit log (implemented); no client-confidential data sent to web search queries.
+
+## 10. v1.1 — changes from the "Comments – Benchmark Platform" review (2026-09-30)
+
+| # | Comment | What changed |
+|---|---|---|
+| 1 | Client requirements | The brief now captures key questions, what to compare and other requirements. The AI builds the framework from them; the consultant can also **Start blank** and build it manually. |
+| 2 | Dynamic benchmark selection | Benchmarks can be a country, government, organization, company, jurisdiction, operating model, program or practice. The consultant can approve, edit, remove or add them. |
+| 3 | Dynamic framework + roles | Every benchmark carries one of 7 roles (Direct, Contextual, Aspirational, Leading Practice, Country/Jurisdiction, Cross-Industry, Practice/Model), shown with its purpose. The gate requires a role for every approved benchmark. |
+| 4 | Flexible analysis | The engagement has an analysis method (qualitative, quantitative or mixed). The AI recommends one with a rationale and the consultant selects it; the Framework gate requires it. |
+| 5 | Research & evidence | Search priority adds Google Scholar and university repositories; primary sources come first; traceability is unchanged. |
+| 6 | Citations | APA 7 in-text citations (Author, Year; with a/b suffixes) appear on every content item and in the report. The reference list is generated automatically in APA 7 with hanging indents. |
+| 7 | Assessment methods | 7 methods: descriptive comparison, qualitative, checklist, maturity 0–4, quantitative, common practice, leading practice. Only maturity, checklist and quantitative criteria can be scored, and only when the consultant includes them. A qualitative engagement has no scores; a composite score needs at least 2 scored criteria. |
+| 8 | Synthesis & approval | **Approve all** in the Benchmark and Synthesis stages applies the same evidence rules and leaves failing items pending with the reason. Individual Edit / Approve / Reject remain. |
+| 9 | Navigation | The **← Back · Save · Next →** bar appears on every stage. Next saves the stage, completes its gate when the user has the right, and moves on. |
+| 10 | Standard report | The Word report and the PPTX both follow: Introduction · Benchmarking Methodology · Benchmark Models · Comparative Analysis · Recommendations & Conclusions · References. |
+| 11 | QA | Release checks are grouped as Source credibility · Evidence · Comparability · Citations · Analysis · Unsupported claims. New rules: QA-12 (a fact supported only by P3/P4 sources) and QA-13 (a cited source cannot form an APA reference). |

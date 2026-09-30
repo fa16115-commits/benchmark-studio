@@ -87,15 +87,117 @@ def short(name):
     return name.split(" — ")[0]
 
 
+DEMO_ROLES = ["aspirational", "direct", "direct", "leading_practice", "contextual"]
+GENERIC_DIMS = ["Strategy & Governance", "Operating Model", "Performance & Outcomes"]
+STOP = set("how what which who when where why does do is are the a an of to in for and or on by with its their has have can should current across".split())
+
+
+def _lines(text):
+    import re
+    return [x.strip(" -•\t") for x in re.split(r"[\n;]+", text or "") if x.strip(" -•\t")]
+
+
+FILLER = set(("leading peers peer benchmarks benchmark organisations organizations companies entities practices practice common "
+              "organise organize organised structured govern governed publish published stand out through completed complete use used "
+              "manage managed report reported automated automate hold holds tier provide provided offer offered achieve achieved").split())
+
+
+def _crit_name(question):
+    words = [w.strip("?,.") for w in question.replace(",", " ").split()]
+    keep = [w for w in words if w.lower() not in STOP and w.lower() not in FILLER and w]
+    name = " ".join(keep[-5:]) or "Criterion"
+    return name[0].upper() + name[1:]
+
+
+def _atype(question):
+    ql = question.lower()
+    if any(k in ql for k in ("how many", "percentage", "%", "cost", "rate", "number of", "how much", "ratio", "time to")):
+        return "quantitative"
+    if any(k in ql for k in ("leading practice", "best practice", "innovative", "stand out")):
+        return "leading_practice"
+    if any(k in ql for k in ("common", "typical", "widely")):
+        return "common_practice"
+    if "matur" in ql:
+        return "rating"
+    if ql.startswith(("is ", "are ", "does ", "do ", "has ", "have ")) or "whether" in ql:
+        return "checklist"
+    return "comparison"
+
+
+def _words(t):
+    return {w.lower().strip("?,.&") for w in t.split()} - STOP - {""}
+
+
 def framework(eng):
+    """Build the framework from the consultant's requirements. Falls back to the sample framework
+    only when the brief gives no key questions and nothing to compare."""
     import copy
-    fw = copy.deepcopy(DEMO_FRAMEWORK)
     scope = eng.get("scope_obj", {})
+    questions = _lines(eng.get("key_questions"))
+    areas = _lines((eng.get("compare_what") or "").replace(",", "\n"))[:5]
     ents = [e.strip() for e in (scope.get("entities") or "").replace(";", ",").split(",") if e.strip()]
-    if ents:
-        fw["comparators"] = [{"name": e, "kind": "organization", "region": scope.get("geography", ""),
-                              "rationale": "Named in the approved scope.", "evidence_note": "To be confirmed in research."} for e in ents[:8]]
-    return fw
+    if not questions and not areas:
+        fw = copy.deepcopy(DEMO_FRAMEWORK)
+        for c, r in zip(fw["comparators"], DEMO_ROLES):
+            c["role"] = r
+        for d in fw["dimensions"]:
+            for c in d["criteria"]:
+                c["scored"] = c["assessment_type"] in ("rating", "checklist", "quantitative")
+        fw["analysis_method"] = "mixed"
+        fw["analysis_rationale"] = ("Sample framework (no key questions were given): maturity ratings and checklists "
+                                    "for practices, supported by two quantitative indicators.")
+        if ents:
+            fw["comparators"] = [{"name": e, "kind": "organization", "role": "direct", "region": scope.get("geography", ""),
+                                  "rationale": "Named in the approved scope.", "evidence_note": "To be confirmed in research."} for e in ents[:8]]
+        return fw
+
+    dims = [{"name": a, "description": f"How the benchmark subjects approach {a.lower()}.", "weight": 3, "criteria": []}
+            for a in (areas or GENERIC_DIMS)]
+    for qn in questions:
+        qw = _words(qn)
+        overlap = [len(qw & _words(d["name"])) for d in dims]
+        best = overlap.index(max(overlap)) if max(overlap) else min(range(len(dims)), key=lambda k: len(dims[k]["criteria"]))
+        at = _atype(qn)
+        dims[best]["criteria"].append({
+            "name": _crit_name(qn), "description": "Derived from the client's key question.", "assessment_type": at,
+            "scored": at in ("quantitative", "rating"), "weight": 3, "direction": "higher_better",
+            "unit": "%" if at == "quantitative" else "", "relevance": "High", "researchability": "Medium",
+            "comparability": "Low" if at == "quantitative" else "Medium",
+            "evidence_risk": "Definitions and periods may differ across subjects." if at == "quantitative" else "",
+            "question": qn if qn.endswith("?") else qn + "?", "indicator": "", "answers_key_question": qn})
+    for d in dims:
+        if not d["criteria"]:
+            d["criteria"].append({"name": f"Approach to {d['name'].lower()}", "assessment_type": "comparison", "scored": False,
+                                  "weight": 3, "relevance": "High", "researchability": "High", "comparability": "Medium",
+                                  "evidence_risk": "", "question": f"How does each benchmark subject approach {d['name'].lower()}?",
+                                  "indicator": "Documented approach"})
+    types = {c["assessment_type"] for d in dims for c in d["criteria"]}
+    if not types & {"quantitative", "rating"}:
+        method = "qualitative"
+    elif types <= {"quantitative", "rating", "checklist"}:
+        method = "quantitative"
+    else:
+        method = "mixed"
+    rationale = {
+        "qualitative": "The key questions ask how and why subjects operate, which calls for descriptive comparison and practice analysis rather than scores.",
+        "quantitative": "The key questions are measurable; comparable indicators allow a scored comparison.",
+        "mixed": "Most questions need descriptive comparison, while a few measurable questions can be supported by indicators; scores are applied only to those.",
+    }[method]
+    region = scope.get("geography") or "Global"
+    comps = [{"name": e, "kind": "organization", "role": "direct", "region": region,
+              "rationale": "Named by the consultant in the brief.", "evidence_note": "To be confirmed in research."} for e in ents[:8]]
+    sector = (eng.get("sector") or "sector").lower()
+    suggestions = [
+        (f"Peer A — leading {sector} organisation", "organization", "aspirational", "Widely cited mature model the client may aspire toward."),
+        (f"Peer B — regional {sector} peer", "organization", "direct", "Similar mandate, scale and regional context to the client."),
+        ("Country C — national framework", "country", "jurisdiction", "Provides a regulatory and national-policy comparison."),
+        ("Practice D — digital service model", "practice", "leading_practice", "Demonstrates a specific practice relevant to the key questions."),
+        ("Company E — adjacent-sector operator", "company", "cross_industry", "Transfers a relevant practice from another sector."),
+    ]
+    for name, kind, role, why in suggestions[: max(0, 5 - len(comps))]:
+        comps.append({"name": name, "kind": kind, "role": role, "region": region,
+                      "rationale": why + " (demo suggestion)", "evidence_note": "Public reporting expected."})
+    return {"dimensions": dims, "analysis_method": method, "analysis_rationale": rationale, "comparators": comps}
 
 
 def research(task):
@@ -113,8 +215,8 @@ def research(task):
         bank = BANK.get(crit)
         claim = (bank[lvl - 1] if bank else "{p} publicly documents its approach to " + crit.lower() + " (demo statement).").format(p=sp)
         out["rating"] = lvl
-    elif at == "checklist":
-        yes = h % 3 != 0
+    elif at in ("checklist", "common_practice", "leading_practice"):
+        yes = (h % 3 != 0) if at != "leading_practice" else (h % 3 == 0)
         pair = CHECK.get(crit, ("{p} confirms " + crit.lower() + " is in place (demo).", "{p} states " + crit.lower() + " is not in place (demo)."))
         claim = pair[0 if yes else 1].format(p=sp)
         out["checklist"] = "yes" if yes else "no"
@@ -125,6 +227,9 @@ def research(task):
         out["value"] = val
     else:
         claim = f"{sp} describes its approach to {crit.lower()} in official documentation (demo statement)."
+        if at == "comparison":
+            claim = (f"{sp} follows a {['centralised', 'federated', 'hybrid', 'outsourced'][h % 4]} approach to "
+                     f"{crit.lower()}, set out in official documentation (demo statement).")
     n_ev = 1 + h % 2
     for i in range(n_ev):
         pr, cat, pub = PUBLISHERS[(h >> (i + 3)) % len(PUBLISHERS)]
@@ -142,7 +247,7 @@ def research(task):
         suff = "conflict"
     out["sufficiency"] = suff
     out["draft_response"] = claim + (" [Interpretation] This indicates a comparatively mature practice." if (out.get("rating") or 0) >= 3 else "")
-    out["notable_practices"] = [claim] if (out.get("rating") or 0) == 4 else []
+    out["notable_practices"] = [claim] if (out.get("rating") or 0) == 4 or (at == "leading_practice" and out["checklist"] == "yes") else []
     return out
 
 

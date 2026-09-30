@@ -10,6 +10,11 @@ const GSTAT = { locked: "Locked", in_progress: "In progress", submitted: "Awaiti
 const ROLE = r => r.replace(/_/g, " ").replace(/\b\w/g, c => c.toUpperCase());
 const can = p => !PREVIEW && S.meta.perm[p].includes(S.user.role);
 const short = n => (n || "").split(" — ")[0];
+const AT = k => ((S.meta.assessment || {})[k] || { label: k }).label;
+const ROLE_L = k => ((S.meta.roles || {})[k] || { label: k || "—" }).label;
+const KIND_L = k => (S.meta.kinds || {})[k] || k || "—";
+const YESNO = { checklist: ["Yes", "No"], common_practice: ["Present", "Not evident"], leading_practice: ["Leading practice", "Not identified"] };
+const approversFor = n => ["engagement_lead"].concat(n === 2 ? ["reviewer"] : []).concat(n === 6 ? ["qa_lead"] : []);
 
 async function api(path, opts = {}) {
   if (PREVIEW) {
@@ -139,6 +144,7 @@ async function viewHome(v) {
 /* ------------------------------------------------------------------ engagement workspace */
 async function viewEngagement(id, tab) {
   const e = S.eng = await api(`/api/engagements/${id}`);
+  S.save = null;
   const stages = S.meta.stages;
   const cur = stages.find(s => s.key === tab) || stages[Math.min(e.current_stage, 6)];
   crumbs(`<a href="#/">Engagements</a> / <b>${esc(e.code)}</b> / ${esc(cur.name)}`);
@@ -146,7 +152,7 @@ async function viewEngagement(id, tab) {
   v.innerHTML = `
     <div class="ehead"><div><div class="row"><span class="chip dark">${esc(e.code)}</span>${e.status === "released" ? chip("Released", "ok") : ""}</div>
       <h1 style="margin-top:6px">${esc(e.title)}</h1><div class="muted">${esc(e.client)} · ${esc(e.sector)} · Lead: ${esc(e.lead)}</div></div>
-      <div class="row"><a class="btn" href="/api/engagements/${id}/export.xlsx">⬇ Evidence workbook</a><a class="btn" href="/api/engagements/${id}/export.pptx">⬇ Deliverable (PPTX)</a></div></div>
+      <div class="row"><a class="btn" href="/api/engagements/${id}/export.xlsx">⬇ Evidence workbook</a><a class="btn" href="/api/engagements/${id}/export.pptx">⬇ Slides (PPTX)</a><a class="btn" href="/api/engagements/${id}/export.docx">⬇ Report (Word)</a></div></div>
     <div class="steps">${stages.map(s => {
       const g = e.gates[s.n];
       return `<div class="step ${s.key === cur.key ? "on" : ""} ${g.status}" data-tab="${s.key}"><small>Stage ${s.n}</small><b>${s.name}</b><div class="st"><span class="dot ${g.status}"></span>${GSTAT[g.status]}</div></div>`;
@@ -168,19 +174,14 @@ const reload = () => route();
 
 async function renderGate(e, st, g) {
   const el = $("#gatebar");
-  if (g.status === "locked") { el.innerHTML = ""; return; }
+  const stages = S.meta.stages, prev = stages[st.n - 1], next = stages[st.n + 1];
+  const role = S.user.role, approvers = approversFor(st.n);
   const btns = [];
-  const role = S.user.role;
-  if (["in_progress", "returned"].includes(g.status) && can("submit")) btns.push(`<button class="btn pri" data-g="submit">Submit for “${st.gate}”</button>`);
-  if (g.status === "submitted") {
-    const approvers = ["engagement_lead"].concat(st.n === 2 ? ["reviewer"] : []).concat(st.n === 6 ? ["qa_lead"] : []);
-    if (approvers.includes(role)) {
-      const label = st.n === 6 && role === "qa_lead" ? "Co-sign release" : "Approve gate";
-      btns.push(`<button class="btn ok" data-g="approve">✓ ${label}</button><button class="btn bad" data-g="return">↩ Return</button>`);
-    }
+  if (!PREVIEW && g.status === "submitted" && approvers.includes(role) && g.submitted_by !== S.user.id) {
+    const label = st.n === 6 && role === "qa_lead" ? "Co-sign release" : "Approve gate";
+    btns.push(`<button class="btn ok" data-g="approve">✓ ${label}</button><button class="btn bad" data-g="return">↩ Return</button>`);
   }
-  if (["approved", "submitted"].includes(g.status) && role === "engagement_lead") btns.push(`<button class="btn sm ghost" data-g="reopen">Reopen stage</button>`);
-  if (PREVIEW) btns.length = 0;
+  if (!PREVIEW && ["approved", "submitted"].includes(g.status) && role === "engagement_lead") btns.push(`<button class="btn sm ghost" data-g="reopen">Reopen stage</button>`);
   let checks = "";
   if (["in_progress", "returned"].includes(g.status)) {
     const c = PREVIEW ? (PREVIEW[`/api/engagements/${e.id}/gates/${st.n}/check`] || { errors: [] }) : await api(`/api/engagements/${e.id}/gates/${st.n}/check`);
@@ -191,39 +192,73 @@ async function renderGate(e, st, g) {
   if (g.decided_name) who += `${g.status === "returned" ? "Returned" : "Approved"} by ${esc(g.decided_name)}. `;
   if (st.n === 6) who += g.cosigned_name ? `QA co-sign: ${esc(g.cosigned_name)}. ` : (g.status === "submitted" ? "Awaiting QA Lead co-sign. " : "");
   if (g.comment && g.status === "returned") who += `Comment: “${esc(g.comment)}”`;
-  el.innerHTML = `<div class="gate ${g.status}"><div><div class="gt">Gate: ${st.gate} <span class="chip ${({ approved: "ok", submitted: "warn", returned: "bad" })[g.status] || "teal"}">${GSTAT[g.status]}</span></div>
+  const canSave = !PREVIEW && ["in_progress", "returned"].includes(g.status) && can("edit");
+  el.innerHTML = `<div class="gate ${g.status}">
+    <button class="btn" data-nav="back" ${prev ? "" : "disabled"}>← Back</button>
+    <div style="min-width:0"><div class="gt">Gate: ${st.gate} <span class="chip ${({ approved: "ok", submitted: "warn", returned: "bad" })[g.status] || "teal"}">${GSTAT[g.status]}</span></div>
     <div class="gs">${who || "Owner: " + (st.n === 2 ? "Reviewer / Engagement Lead" : st.n === 6 ? "QA Lead co-sign + Engagement Lead" : "Engagement Lead")}</div>${checks}</div>
-    <div class="sp"></div>${btns.join("")}</div>`;
+    <div class="sp"></div>${btns.join("")}
+    ${canSave ? `<button class="btn" data-nav="save">Save</button>` : ""}
+    <button class="btn pri" data-nav="next" title="Saves this stage, completes its gate when you are allowed to, and moves on">${next ? "Next →" : "Finish ✓"}</button></div>`;
   $$("[data-g]", el).forEach(b => b.onclick = async () => {
     const a = b.dataset.g;
     let comment = "";
     if (a === "return" || a === "reopen") { comment = prompt(a === "return" ? "Reason for returning:" : "Reason for reopening (downstream stages will be re-locked):"); if (comment === null) return; }
     await post(`/api/engagements/${e.id}/gates/${st.n}/${a}`, { comment });
-    toast(({ submit: "Submitted for approval", approve: "Gate decision recorded", return: "Returned for rework", reopen: "Stage reopened" })[a]);
+    toast(({ approve: "Gate decision recorded", return: "Returned for rework", reopen: "Stage reopened" })[a]);
     reload();
   });
+  const nb = $('[data-nav="back"]', el); if (nb) nb.onclick = () => prev && (location.hash = `#/e/${e.id}/${prev.key}`);
+  const ns = $('[data-nav="save"]', el); if (ns) ns.onclick = async () => { if (S.save) await S.save(false); else toast("All changes are saved"); };
+  $('[data-nav="next"]', el).onclick = () => goNext(e, st, g, next);
+}
+
+async function goNext(e, st, g, next) {
+  const go = () => next ? (location.hash = `#/e/${e.id}/${next.key}`) : reload();
+  if (PREVIEW) return go();
+  try {
+    if (S.save && ["in_progress", "returned"].includes(g.status)) await S.save(true);
+    const role = S.user.role, approvers = approversFor(st.n);
+    if (["in_progress", "returned"].includes(g.status)) {
+      if (!can("submit")) { toast("Saved. A consultant or the engagement lead completes this stage."); return go(); }
+      const c = await api(`/api/engagements/${e.id}/gates/${st.n}/check`);
+      if (c.errors.length) { toast("Saved. To move on, first: " + c.errors[0], true); return renderGate(await api(`/api/engagements/${e.id}`), st, g); }
+      await post(`/api/engagements/${e.id}/gates/${st.n}/submit`, {});
+      if (approvers.includes(role)) {
+        await post(`/api/engagements/${e.id}/gates/${st.n}/approve`, {});
+        toast(st.n === 6 ? "Saved and approved — awaiting QA Lead co-sign" : `Saved · “${st.gate}” approved`);
+      } else toast(`Saved and submitted — awaiting approval (${approvers.map(ROLE).join(" / ")})`);
+    } else if (g.status === "submitted" && approvers.includes(role)) {
+      await post(`/api/engagements/${e.id}/gates/${st.n}/approve`, {});
+      toast(`“${st.gate}” approved`);
+    }
+    go();
+  } catch (err) { /* api() already showed the error */ }
 }
 
 /* ---- Stage 0: brief */
 async function stBrief(box, e, ed) {
   const s = e.scope || {};
   const dis = ed && can("edit") ? "" : "disabled";
-  const f = (k, l, v, ta, ph = "") => `<label class="f">${l}${ta ? `<textarea class="in" data-k="${k}" ${dis} placeholder="${ph}">${esc(v)}</textarea>` : `<input class="in" data-k="${k}" value="${esc(v)}" ${dis}>`}</label>`;
+  const f = (k, l, v, ta, ph = "", rows = 0) => `<label class="f">${l}${ta ? `<textarea class="in" data-k="${k}" ${dis} placeholder="${ph}" ${rows ? `style="min-height:${rows * 22}px"` : ""}>${esc(v)}</textarea>` : `<input class="in" data-k="${k}" value="${esc(v)}" ${dis} placeholder="${ph}">`}</label>`;
   box.innerHTML = `<div class="grid2">
-    <div class="card"><h2>Introduction & brief</h2><p class="small muted">AI helps articulate the assignment; the engagement lead owns intent.</p>
+    <div class="card"><h2>Introduction & brief</h2><p class="small muted">Define the assignment in your own terms. Nothing here is tied to a predefined framework — the AI proposes the framework from what you write.</p>
       ${f("title", "Title", e.title)}${f("client", "Client", e.client)}${f("sector", "Sector", e.sector)}
       ${f("objective", "Objective *", e.objective, 1)}${f("context", "Engagement context", e.context, 1)}
       ${f("decision_statement", "Decision the study supports *", e.decision_statement, 1)}${f("expected_outcomes", "Expected outcomes", e.expected_outcomes, 1)}</div>
-    <div class="card"><h2>Scope</h2><p class="small muted">No research starts before scope is clear. Factual assumptions must be flagged, not invented.</p>
+    <div class="card"><h2>Client requirements</h2><p class="small muted">These drive the framework, the benchmark selection and the analysis method.</p>
+      ${f("key_questions", "Key questions the client wants answered * (one per line)", e.key_questions, 1, "e.g. How do leading peers organise their operating model?", 6)}
+      ${f("compare_what", "What needs to be compared (one area per line)", e.compare_what, 1, "e.g. Governance\nDigital channels\nService standards", 4)}
+      ${f("requirements", "Other requirements", e.requirements, 1, "e.g. Include at least one GCC and one cross-industry benchmark")}
+      <h2 style="margin-top:16px">Scope</h2>
       ${f("s.inclusions", "Inclusions *", s.inclusions, 1)}${f("s.exclusions", "Exclusions", s.exclusions, 1)}
-      ${f("s.geography", "Geography", s.geography)}${f("s.entities", "Named entities / comparators (optional, comma-separated)", s.entities, 0)}
-      ${f("s.period", "Period", s.period)}${f("s.constraints", "Constraints", s.constraints, 1)}
-      ${dis ? "" : `<button class="btn pri" id="saveBrief">Save brief & scope</button>`}</div></div>`;
-  const b = $("#saveBrief");
-  if (b) b.onclick = async () => {
+      ${f("s.geography", "Geography", s.geography)}${f("s.entities", "Benchmarks you already want included (optional, comma-separated)", s.entities, 0)}
+      ${f("s.period", "Period", s.period)}${f("s.constraints", "Constraints", s.constraints, 1)}</div></div>`;
+  if (!dis) S.save = async silent => {
     const body = { scope: {} };
     $$("[data-k]", box).forEach(i => { const k = i.dataset.k; k.startsWith("s.") ? (body.scope[k.slice(2)] = i.value) : (body[k] = i.value); });
-    await put(`/api/engagements/${e.id}`, body); toast("Brief saved"); reload();
+    await put(`/api/engagements/${e.id}`, body);
+    if (!silent) { toast("Brief saved"); reload(); }
   };
 }
 
@@ -233,19 +268,35 @@ async function stFramework(box, e, ed) {
   const E = ed && can("edit");
   const dis = E ? "" : "disabled";
   const opt = (vals, cur) => vals.map(v => `<option ${v === cur ? "selected" : ""}>${v}</option>`).join("");
+  const optKV = (obj, cur, lab = x => x) => Object.entries(obj).map(([k, v]) => `<option value="${k}" ${k === cur ? "selected" : ""}>${esc(lab(v))}</option>`).join("");
+  const qs = (e.key_questions || "").split("\n").map(x => x.trim()).filter(Boolean);
+  const method = e.analysis_method;
+  const nCrit = fw.dimensions.reduce((a, d) => a + d.criteria.length, 0);
   box.innerHTML = `
-  <div class="card row"><div><h2 style="margin:0">Benchmark framework</h2><div class="small muted">AI proposes a bespoke framework; the consultant decides. Edits are captured as feedback for prompt improvement.</div></div>
-    <div class="sp"></div>${E && can("run_ai") ? `<button class="btn ai" id="genFw">${fw.dimensions.length ? "Regenerate" : "Generate"} framework with AI</button>` : ""}
-    ${E && fw.dimensions.length ? `<button class="btn" id="apAll">Approve all criteria</button><button class="btn" id="addDim">+ Dimension</button>` : ""}</div>
+  <div class="grid2">
+    <div class="card"><h2>Client requirements</h2>
+      ${qs.length ? `<ol class="small" style="line-height:1.6;margin:0 0 8px;padding-inline-start:18px">${qs.map(x => `<li>${esc(x)}</li>`).join("")}</ol>` : `<div class="hint warn">No key questions yet — add them in the brief so the AI can tailor the framework.</div>`}
+      ${e.compare_what ? `<div class="small"><b>Compare:</b> ${esc(e.compare_what.split("\n").filter(Boolean).join(" · "))}</div>` : ""}
+      ${e.requirements ? `<div class="small muted" style="margin-top:4px">${esc(e.requirements)}</div>` : ""}</div>
+    <div class="card"><h2>Analysis method</h2>
+      <div class="row" style="gap:8px">${Object.entries(S.meta.analysis).map(([k, v]) => `<label class="chip ${method === k ? "teal" : ""}" style="padding:6px 10px;cursor:${E ? "pointer" : "default"}"><input type="radio" name="am" value="${k}" ${method === k ? "checked" : ""} ${dis} style="margin:0 6px 0 0">${esc(v.split(" — ")[0])}</label>`).join("")}</div>
+      <div class="small muted" style="margin-top:6px">${esc(method ? S.meta.analysis[method].split(" — ")[1] : "Select a method or let the AI recommend one.")}</div>
+      ${e.analysis_rationale ? `<div class="hint" style="margin-top:8px">✦ AI recommendation: ${esc(e.analysis_rationale)}</div>` : ""}</div>
+  </div>
+  <div class="card row"><div><h2 style="margin:0">Benchmark framework</h2><div class="small muted">Built for this engagement from the requirements above. Add, edit or remove anything; edits are captured as feedback.</div></div>
+    <div class="sp"></div>${E && can("run_ai") ? `<button class="btn ai" id="genFw">${nCrit ? "Regenerate" : "Generate"} framework from requirements</button>` : ""}
+    ${E ? `<button class="btn" id="blankFw">Start blank</button><button class="btn" id="addDim">+ Dimension</button>` : ""}
+    ${E && nCrit ? `<button class="btn ok" id="apAll">Approve all criteria</button>` : ""}</div>
   ${fw.dimensions.map(d => `
     <div class="dim"><div class="dimh"><input value="${esc(d.name)}" data-dim="${d.id}" data-f="name" ${dis}><span class="small muted">Weight</span>
       <select class="in" style="width:64px" data-dim="${d.id}" data-f="weight" ${dis}>${opt([1, 2, 3, 4, 5], d.weight)}</select>
       ${E ? `<button class="btn sm" data-addcrit="${d.id}">+ Criterion</button><button class="btn sm ghost" data-deldim="${d.id}">✕</button>` : ""}</div>
-      ${d.criteria.map(c => `
+      ${d.criteria.map(c => { const sc = (S.meta.assessment[c.assessment_type] || {}).scorable && method !== "qualitative"; return `
       <div class="crit">
         <div><input class="in" value="${esc(c.name)}" data-c="${c.id}" data-f="name" ${dis}>
-          <div class="row" style="margin-top:6px;gap:6px"><select class="in" style="width:auto" data-c="${c.id}" data-f="assessment_type" ${dis}>${opt(["rating", "checklist", "quantitative", "qualitative"], c.assessment_type)}</select>
+          <div class="row" style="margin-top:6px;gap:6px"><select class="in" style="width:auto;max-width:100%" data-c="${c.id}" data-f="assessment_type" ${dis}>${optKV(S.meta.assessment, c.assessment_type, v => v.label)}</select>
           <select class="in" style="width:auto" title="Weight" data-c="${c.id}" data-f="weight" ${dis}>${opt([1, 2, 3, 4, 5], c.weight)}</select></div>
+          <label class="small" style="display:block;margin-top:6px" title="${sc ? "Include this criterion in numeric scores" : "This method is never scored"}"><input type="checkbox" data-scored="${c.id}" ${c.scored && sc ? "checked" : ""} ${sc && E ? "" : "disabled"}> Include in scoring</label>
           ${c.assessment_type === "quantitative" ? `<div class="row" style="margin-top:6px;gap:6px"><select class="in" style="width:auto" data-c="${c.id}" data-f="direction" ${dis}>${opt(["higher_better", "lower_better"], c.direction)}</select><input class="in" style="width:70px" placeholder="unit" value="${esc(c.unit)}" data-c="${c.id}" data-f="unit" ${dis}></div>` : ""}
         </div>
         <div><textarea class="in" data-c="${c.id}" data-f="question" ${dis} placeholder="Structured research question">${esc(c.question)}</textarea>
@@ -253,30 +304,37 @@ async function stFramework(box, e, ed) {
         <div><div class="small muted">Relevance · Researchability · Comparability</div>
           <div class="rrc">${["relevance", "researchability", "comparability"].map(k => `<select class="in" data-c="${c.id}" data-f="${k}" ${dis}>${opt(["High", "Medium", "Low"], c[k])}</select>`).join("")}</div>
           ${c.evidence_risk ? `<div class="hint warn">⚠ ${esc(c.evidence_risk)}</div>` : ""}</div>
-        <div style="text-align:right">${c.status === "approved" ? chip("Approved", "ok") : chip("Proposed", "warn")}
+        <div style="text-align:end">${c.status === "approved" ? chip("Approved", "ok") : chip("Proposed", "warn")}
           ${E ? `<div style="margin-top:6px">${c.status === "approved" ? `<button class="btn sm" data-cst="${c.id}" data-v="proposed">Unapprove</button>` : `<button class="btn sm ok" data-cst="${c.id}" data-v="approved">Approve</button>`}
           <button class="btn sm ghost" data-delcrit="${c.id}">✕</button></div>` : ""}</div>
-      </div>`).join("") || `<div class="empty small">No criteria.</div>`}
-    </div>`).join("") || `<div class="card empty">No framework yet. ${E ? "Generate one with AI or add dimensions manually." : ""}</div>`}
-  <div class="card"><div class="row"><h2 style="margin:0">Comparator set</h2><div class="sp"></div>${E ? `<button class="btn" id="addComp">+ Comparator</button>` : ""}</div>
-    <table class="t" style="margin-top:10px"><tr><th>Comparator</th><th>Type</th><th>Region</th><th>Selection rationale</th><th>Status</th><th></th></tr>
+      </div>`; }).join("") || `<div class="empty small">No criteria.</div>`}
+    </div>`).join("") || `<div class="card empty">No framework yet. ${E ? "Generate one from the requirements, or start blank and build it yourself." : ""}</div>`}
+  <div class="card"><div class="row"><h2 style="margin:0">Benchmark selection</h2><span class="small muted">Countries, governments, organisations, companies, jurisdictions, operating models, programs or practices.</span><div class="sp"></div>${E ? `<button class="btn" id="addComp">+ Benchmark</button>` : ""}</div>
+    <div style="overflow-x:auto"><table class="t" style="margin-top:10px"><tr><th>Benchmark</th><th>Type</th><th>Benchmark role</th><th>Region</th><th>Selection rationale</th><th>Status</th><th></th></tr>
     ${fw.comparators.map(p => `<tr><td><input class="in" value="${esc(p.name)}" data-p="${p.id}" data-f="name" ${dis}></td>
-      <td><select class="in" data-p="${p.id}" data-f="kind" ${dis}>${opt(["organization", "country", "practice"], p.kind)}</select></td>
+      <td><select class="in" data-p="${p.id}" data-f="kind" ${dis}>${optKV(S.meta.kinds, p.kind)}</select></td>
+      <td><select class="in" data-p="${p.id}" data-f="role" ${dis} title="${esc((S.meta.roles[p.role] || {}).purpose || "")}"><option value="">— choose —</option>${optKV(S.meta.roles, p.role, v => v.label)}</select></td>
       <td><input class="in" value="${esc(p.region)}" data-p="${p.id}" data-f="region" ${dis}></td>
       <td><textarea class="in" style="min-height:40px" data-p="${p.id}" data-f="rationale" ${dis}>${esc(p.rationale)}</textarea>${p.evidence_note ? `<div class="small muted">${esc(p.evidence_note)}</div>` : ""}</td>
       <td>${statusChip(p.status === "proposed" ? "pending" : p.status === "approved" ? "approved" : "rejected")}</td>
-      <td style="white-space:nowrap">${E ? `<button class="btn sm ok" data-pst="${p.id}" data-v="approved">✓</button> <button class="btn sm bad" data-pst="${p.id}" data-v="rejected">✕</button>` : ""}</td></tr>`).join("")}
-    </table></div>`;
-  const g = $("#genFw"); if (g) g.onclick = async () => { if (fw.dimensions.length && !confirm("Replace the current framework with a new AI proposal?")) return; await runJob(`/api/engagements/${e.id}/ai/framework`, {}, "Designing framework"); reload(); };
-  const ap = $("#apAll"); if (ap) ap.onclick = async () => { for (const d of fw.dimensions) for (const c of d.criteria) if (c.status !== "approved") await put(`/api/criteria/${c.id}`, { status: "approved" }); reload(); };
+      <td style="white-space:nowrap">${E ? `<button class="btn sm ok" data-pst="${p.id}" data-v="approved" title="Approve">✓</button> <button class="btn sm bad" data-pst="${p.id}" data-v="rejected" title="Reject">✕</button> <button class="btn sm ghost" data-pdel="${p.id}" title="Remove">🗑</button>` : ""}</td></tr>`).join("")}
+    </table></div>
+    <details style="margin-top:10px"><summary class="small" style="cursor:pointer">Benchmark roles explained</summary>
+      <table class="t" style="margin-top:6px">${Object.values(S.meta.roles).map(r => `<tr><td><b>${esc(r.label)}</b></td><td class="small">${esc(r.purpose)}</td></tr>`).join("")}</table></details></div>`;
+  const g = $("#genFw"); if (g) g.onclick = async () => { if (nCrit && !confirm("Replace the current framework with a new AI proposal?")) return; await runJob(`/api/engagements/${e.id}/ai/framework`, {}, "Designing framework"); reload(); };
+  const bf = $("#blankFw"); if (bf) bf.onclick = async () => { if (nCrit && !confirm("Remove all dimensions and criteria and start from a blank framework?")) return; await post(`/api/engagements/${e.id}/framework/clear`); await post(`/api/engagements/${e.id}/dimensions`, { name: "New dimension" }); reload(); };
+  const ap = $("#apAll"); if (ap) ap.onclick = async () => { for (const d of fw.dimensions) for (const c of d.criteria) if (c.status !== "approved") await put(`/api/criteria/${c.id}`, { status: "approved" }); toast("All criteria approved"); reload(); };
   const ad = $("#addDim"); if (ad) ad.onclick = async () => { await post(`/api/engagements/${e.id}/dimensions`, { name: "New dimension" }); reload(); };
-  const ac = $("#addComp"); if (ac) ac.onclick = async () => { await post(`/api/engagements/${e.id}/comparators`, { name: "New comparator" }); reload(); };
+  const ac = $("#addComp"); if (ac) ac.onclick = async () => { await post(`/api/engagements/${e.id}/comparators`, { name: "New benchmark", role: "direct" }); reload(); };
+  $$('input[name="am"]', box).forEach(r => r.onchange = async () => { await put(`/api/engagements/${e.id}/analysis`, { analysis_method: r.value }); toast("Analysis method saved"); reload(); });
   $$("[data-dim]", box).forEach(i => i.onchange = () => put(`/api/dimensions/${i.dataset.dim}`, { [i.dataset.f]: i.value }).then(() => toast("Saved")));
   $$("[data-c]", box).forEach(i => i.onchange = () => put(`/api/criteria/${i.dataset.c}`, { [i.dataset.f]: i.value }).then(() => { toast("Saved"); if (i.dataset.f === "assessment_type") reload(); }));
+  $$("[data-scored]", box).forEach(i => i.onchange = () => put(`/api/criteria/${i.dataset.scored}`, { scored: i.checked ? 1 : 0 }).then(() => toast(i.checked ? "Included in scoring" : "Excluded from scoring")));
   $$("[data-p]", box).forEach(i => i.onchange = () => put(`/api/comparators/${i.dataset.p}`, { [i.dataset.f]: i.value }).then(() => toast("Saved")));
   $$("[data-cst]", box).forEach(b => b.onclick = async () => { await put(`/api/criteria/${b.dataset.cst}`, { status: b.dataset.v }); reload(); });
   $$("[data-pst]", box).forEach(b => b.onclick = async () => { await put(`/api/comparators/${b.dataset.pst}`, { status: b.dataset.v }); reload(); });
-  $$("[data-addcrit]", box).forEach(b => b.onclick = async () => { await post(`/api/engagements/${e.id}/criteria`, { dimension_id: +b.dataset.addcrit }); reload(); });
+  $$("[data-pdel]", box).forEach(b => b.onclick = async () => { if (confirm("Remove this benchmark?")) { await del(`/api/comparators/${b.dataset.pdel}`); reload(); } });
+  $$("[data-addcrit]", box).forEach(b => b.onclick = async () => { await post(`/api/engagements/${e.id}/criteria`, { dimension_id: +b.dataset.addcrit, assessment_type: "comparison" }); reload(); });
   $$("[data-delcrit]", box).forEach(b => b.onclick = async () => { if (confirm("Delete this criterion?")) { await del(`/api/criteria/${b.dataset.delcrit}`); reload(); } });
   $$("[data-deldim]", box).forEach(b => b.onclick = async () => { if (confirm("Delete this dimension and its criteria?")) { await del(`/api/dimensions/${b.dataset.deldim}`); reload(); } });
 }
@@ -294,7 +352,7 @@ async function stResearch(box, e, ed) {
   const pending = tasks.filter(t => t.status === "not_started").length;
   const cnt = s => tasks.filter(t => t.status === s).length;
   rb.innerHTML = `
-  <div class="card row"><div><h2 style="margin:0">Evidence base: comparator × question</h2>
+  <div class="card row"><div><h2 style="margin:0">Evidence base: benchmark × question</h2>
     <div class="small muted">Primary-source-first. No material statement without traceable evidence. “Unknown” when evidence is insufficient.</div></div><div class="sp"></div>
     ${ed && can("run_ai") ? `<button class="btn ai" id="runR" ${pending ? "" : "disabled"}>Run AI research (${pending} tasks)</button>` : ""}</div>
   <div class="grid4" style="margin-bottom:12px">
@@ -304,7 +362,7 @@ async function stResearch(box, e, ed) {
     <div class="kpi"><b>${cnt("gap")}</b><span>Evidence gaps (disclosed)</span></div></div>
   <div class="legend"><span style="--c:#F3F5F5">Not started</span><span style="--c:var(--warnbg)">Draft – review</span><span style="--c:var(--okbg)">Complete</span><span style="--c:var(--badbg)">Evidence gap</span></div>
   <div class="rgrid"><table><tr><th>Criterion / question</th>${comps.map(([, n]) => `<th title="${esc(n)}">${esc(short(n))}</th>`).join("")}</tr>
-  ${crits.map(c => `<tr><td><b>${esc(c.criterion)}</b><div class="small muted">${esc(c.assessment_type)}</div></td>
+  ${crits.map(c => `<tr><td><b>${esc(c.criterion)}</b><div class="small muted">${esc(AT(c.assessment_type))}</div></td>
     ${comps.map(([pid]) => { const t = tasks.find(x => x.comparator_id === pid && x.question_id === c.question_id); return `<td>${t ? cellHtml(t) : ""}</td>`; }).join("")}</tr>`).join("")}
   </table></div>`;
   const r = $("#runR"); if (r) r.onclick = async () => { await runJob(`/api/engagements/${e.id}/ai/research`, {}, "Researching"); reload(); };
@@ -313,7 +371,10 @@ async function stResearch(box, e, ed) {
 function cellHtml(t) {
   let v = TSTAT[t.status];
   if (["drafted", "complete"].includes(t.status)) {
-    v = t.assessment_type === "rating" ? (t.rating != null ? t.rating + "/4" : "Unknown") : t.assessment_type === "checklist" ? (t.checklist || "Unknown") : t.assessment_type === "quantitative" ? (t.value != null ? t.value + (t.unit || "") : "Unknown") : "Assessed";
+    const at = t.assessment_type, yn = YESNO[at];
+    v = at === "rating" ? (t.rating != null ? t.rating + "/4" : "Unknown")
+      : yn ? (t.checklist === "yes" ? yn[0] : t.checklist === "no" ? yn[1] : "Unknown")
+      : at === "quantitative" ? (t.value != null ? t.value + (t.unit || "") : "Unknown") : "Described";
   }
   return `<div class="cell ${t.status}" data-task="${t.id}"><div class="v">${esc(v)}</div><div class="s">${t.status === "gap" ? "Insufficient evidence" : `${t.ev_accepted}/${t.ev_total} ev.${t.ev_pending ? " · " + t.ev_pending + " to review" : ""}`}${t.sufficiency && t.status !== "gap" ? " · " + t.sufficiency : ""}</div></div>`;
 }
@@ -324,12 +385,12 @@ async function openTask(tid, ed) {
   const at = t.assessment_type;
   const cmp = t.comparability || {};
   const valueInput = at === "rating" ? `<select class="in" id="tVal" ${canEd ? "" : "disabled"}><option value="">Unknown</option>${[0, 1, 2, 3, 4].map(n => `<option ${t.rating === n ? "selected" : ""} value="${n}">${n} — ${["Absent (authoritative evidence)", "Initial", "Developing", "Established", "Leading"][n]}</option>`).join("")}</select>`
-    : at === "checklist" ? `<select class="in" id="tVal" ${canEd ? "" : "disabled"}>${["", "yes", "no"].map(o => `<option value="${o}" ${t.checklist === o || (!t.checklist && !o) ? "selected" : ""}>${o || "unknown"}</option>`).join("")}</select>`
-      : at === "quantitative" ? `<input class="in" id="tVal" type="number" step="any" value="${t.value ?? ""}" ${canEd ? "" : "disabled"}> <span class="small muted">${esc(t.unit || "")}</span>` : `<span class="muted small">Qualitative — response text only</span>`;
+    : YESNO[at] ? `<select class="in" id="tVal" ${canEd ? "" : "disabled"}>${[["", "Unknown"], ["yes", YESNO[at][0]], ["no", YESNO[at][1]]].map(([o, l]) => `<option value="${o}" ${t.checklist === o || (!["yes", "no"].includes(t.checklist) && !o) ? "selected" : ""}>${l}</option>`).join("")}</select>`
+      : at === "quantitative" ? `<input class="in" id="tVal" type="number" step="any" value="${t.value ?? ""}" ${canEd ? "" : "disabled"}> <span class="small muted">${esc(t.unit || "")}</span>` : `<span class="muted small">${esc(AT(at))} — no score; the response text is the assessment</span>`;
   openDrawer(`
     <div class="row"><span class="chip dark">Task #${t.id}</span>${chip(TSTAT[t.status], ({ complete: "ok", gap: "bad", drafted: "warn" })[t.status])}${t.sufficiency ? chip("Sufficiency: " + t.sufficiency, t.sufficiency === "sufficient" ? "ok" : t.sufficiency === "conflict" ? "bad" : "warn") : ""}<div class="sp"></div><button class="btn sm" onclick="closeDrawer()">Close ✕</button></div>
     <h2 style="margin-top:12px">${esc(t.comparator)}</h2>
-    <div class="card"><div class="small muted">${esc(t.criterion)} · ${esc(at)}</div><h3 style="margin-top:4px">${esc(t.question)}</h3><div class="small muted">Indicator: ${esc(t.indicator)}</div>
+    <div class="card"><div class="small muted">${esc(t.criterion)} · ${esc(AT(at))}</div><h3 style="margin-top:4px">${esc(t.question)}</h3><div class="small muted">Indicator: ${esc(t.indicator)}</div>
       ${t.error ? `<div class="hint warn">Last AI run failed: ${esc(t.error)}</div>` : ""}</div>
     <div class="card"><h3>Draft response <span class="chip warn">PENDING HUMAN REVIEW</span></h3>
       <textarea class="in" id="tDraft" ${canEd ? "" : "disabled"}>${esc(t.draft_response)}</textarea>
@@ -347,7 +408,7 @@ async function openTask(tid, ed) {
         <div class="row"><span class="chip ev ${ev.priority}">${esc(ev.code)}</span>${chip(ev.priority, ev.priority === "REJECT" ? "bad" : ev.priority === "P1" ? "ok" : ev.priority === "P2" ? "info" : "warn")}<span class="small muted">${esc(ev.source_category)}</span><div class="sp"></div>${statusChip(ev.status)}</div>
         <div style="margin-top:8px;font-weight:600">${esc(ev.claim)}</div>
         ${ev.snapshot ? `<div class="quote">“${esc(ev.snapshot)}”</div>` : ""}
-        <div class="small">${esc(ev.publisher)} · <i>${esc(ev.title)}</i> · ${esc(ev.pub_date)} · ${esc(ev.locator || "")} · ${esc(ev.accessibility || "")}</div>
+        <div class="small">${ev.author && ev.author !== ev.publisher ? esc(ev.author) + " · " : ""}${esc(ev.publisher)} · <i>${esc(ev.title)}</i> · ${esc(ev.pub_date)} · ${esc(ev.locator || "")} · ${esc(ev.accessibility || "")}</div>
         <div class="small"><a href="${esc(ev.url)}" target="_blank" rel="noopener">${esc(ev.url)}</a> <span class="muted">accessed ${esc(ev.accessed_at)}</span></div>
         ${ev.limitations ? `<div class="small muted">Limitations: ${esc(ev.limitations)}</div>` : ""}
         ${ev.validation && ev.validation.recommendation ? `<div class="hint ${ev.validation.recommendation === "accept" ? "" : "warn"}">Source-validation agent: <b>${esc(ev.validation.recommendation)}</b> — ${esc(ev.validation.reason)}</div>` : ""}
@@ -362,7 +423,7 @@ async function openTask(tid, ed) {
       const b = { draft_response: $("#tDraft").value, sufficiency: $("#tSuf").value };
       const v = $("#tVal");
       if (v && at === "rating") b.rating = v.value === "" ? null : +v.value;
-      if (v && at === "checklist") b.checklist = v.value || "unknown";
+      if (v && YESNO[at]) b.checklist = v.value || "unknown";
       if (v && at === "quantitative") b.value = v.value === "" ? null : +v.value;
       if (at === "quantitative") { b.comparability = {}; $$("[data-cmp]").forEach(c => (b.comparability[c.dataset.cmp] = c.checked)); }
       return b;
@@ -376,7 +437,7 @@ async function openTask(tid, ed) {
     on("#addQb", async () => { await put(`/api/tasks/${tid}`, { add_search: $("#addQ").value }); after(); });
     on("#addEv", () => {
       $("#evForm").innerHTML = `<div class="card"><h3>Add evidence</h3><div class="grid2">
-        ${["claim", "publisher", "title", "pub_date", "url", "locator"].map(k => `<label class="f">${k.replace("_", " ")}<input class="in" data-nev="${k}"></label>`).join("")}
+        ${["claim", "author", "publisher", "title", "pub_date", "url", "locator"].map(k => `<label class="f">${k.replace("_", " ")}<input class="in" data-nev="${k}"></label>`).join("")}
         <label class="f">Priority<select class="in" data-nev="priority">${["P1", "P2", "P3", "P4"].map(p => `<option>${p}</option>`).join("")}</select></label>
         <label class="f">Source category<select class="in" data-nev="source_category">${["Government / regulator / official statistics", "Company / organization primary", "International institutions", "Academic / research institutions", "Industry / professional bodies", "Reputable professional research", "Established business/news media", "Specialist sources"].map(p => `<option>${p}</option>`).join("")}</select></label></div>
         <label class="f">Verbatim excerpt (snapshot)<textarea class="in" data-nev="snapshot"></textarea></label><button class="btn pri" id="nevSave">Add evidence</button></div>`;
@@ -418,24 +479,39 @@ async function stBenchmark(box, e, ed) {
   const mine = items.filter(i => ["profile", "assessment", "comparison"].includes(i.section));
   box.innerHTML = `
   <div class="card row"><div><h2 style="margin:0">Compare & assess</h2><div class="small muted">AI drafts only from reviewed evidence. Comparisons are computed from the matrix — never free-written. Unknown ≠ 0.</div></div><div class="sp"></div>
-    ${ed && can("run_ai") ? `<button class="btn ai" id="genB">Draft profiles & comparisons with AI</button>` : ""}</div>
+    ${ed && can("run_ai") ? `<button class="btn ai" id="genB">Draft profiles & comparisons with AI</button>` : ""}
+    ${ed && can("review_content") && mine.some(i => i.status === "pending") ? `<button class="btn ok" id="apAllB">✓ Approve all</button>` : ""}</div>
   ${heatmap(m)}
   <div class="sec-h"><h3>Cross-comparator comparisons</h3>${chip(mine.filter(i => i.section === "comparison").length + " items")}</div>
   ${itemsHtml(mine.filter(i => i.section === "comparison"), ed)}
   ${m.comparators.map(p => { const its = mine.filter(i => i.comparator_id === p.id); return its.length ? `<div class="sec-h"><h3>${esc(p.name)}</h3>${chip(its.length + " items")}</div>${itemsHtml(its, ed)}` : ""; }).join("")}
   ${mine.length ? "" : `<div class="card empty">No benchmark content yet.</div>`}`;
   const g = $("#genB"); if (g) g.onclick = async () => { await runJob(`/api/engagements/${e.id}/ai/benchmark`, {}, "Drafting benchmark"); reload(); };
+  const aa = $("#apAllB"); if (aa) aa.onclick = () => approveAll(e, ["profile", "assessment", "comparison"]);
   bindItems(box, e);
 }
 function heatmap(m) {
-  const cls = n => n == null ? "hn" : n >= .75 ? "h3" : n >= .5 ? "h2" : n >= .25 ? "h1" : "h0";
-  return `<div class="card"><div class="row"><h2 style="margin:0">Scored comparison matrix</h2><span class="small muted">Weighted, normalised 0–100. Composite shown only when coverage ≥ ${m.threshold}%. Overall coverage ${m.coverage}%.</span></div>
-  <div style="overflow:auto;margin-top:10px"><table class="t heat"><tr><th>Dimension / criterion</th><th>Type · wt</th>${m.comparators.map(p => `<th title="${esc(p.name)}">${esc(short(p.name))}</th>`).join("")}</tr>
-  ${m.dimensions.map(d => `<tr><td colspan="2" style="background:var(--mint2)"><b>${esc(d.name)}</b></td>${m.comparators.map(p => { const s = m.scores[p.id].dimensions.find(x => x.dimension_id === d.id); return `<td class="h" style="background:var(--mint2)">${s && s.score != null ? s.score : "—"}</td>`; }).join("")}</tr>
-    ${m.criteria.filter(c => c.dimension_id === d.id).map(c => `<tr><td style="padding-left:22px">${esc(c.name)}</td><td class="small muted">${esc(c.assessment_type)} · ${c.weight}</td>
-      ${m.comparators.map(p => { const x = m.cells[c.id + ":" + p.id]; return `<td class="h ${cls(x.norm)}" title="${x.comparable === false ? "Comparability checks not passed — not scored" : ""}">${esc(x.display)}${x.comparable === false ? " ⚠" : ""}</td>`; }).join("")}</tr>`).join("")}`).join("")}
-  <tr><td colspan="2"><b>Overall score</b><div class="small muted">coverage</div></td>${m.comparators.map(p => { const s = m.scores[p.id]; return `<td class="h"><div class="score">${s.overall ?? "n/a"}</div><div class="bar"><i style="width:${s.coverage}%"></i></div><div class="small muted">${s.coverage}%</div></td>`; }).join("")}</tr>
+  const cls = x => x.norm != null ? (x.norm >= .75 ? "h3" : x.norm >= .5 ? "h2" : x.norm >= .25 ? "h1" : "h0") : ({ pos: "h3", mid: "h2", neutral: "h1" })[x.tone] || "hn";
+  const title = m.scoring ? "Comparison matrix with scores" : "Comparison matrix";
+  const note = m.scoring ? `Scores apply only to scored criteria, normalised 0–100 and weighted. Composite shown when coverage ≥ ${m.threshold}%. Score coverage ${m.coverage}%.`
+    : `No numerical scoring (${m.analysis_method === "qualitative" ? "qualitative analysis" : "fewer than two scored criteria"}). Cells show the assessment for each method. ${m.assessed_pct}% of cells assessed.`;
+  return `<div class="card"><div class="row"><h2 style="margin:0">${title}</h2><span class="small muted">${note}</span></div>
+  <div style="overflow:auto;margin-top:10px"><table class="t heat"><tr><th>Dimension / criterion</th><th>Method</th>${m.comparators.map(p => `<th title="${esc(p.name)} — ${esc(ROLE_L(p.role))}">${esc(short(p.name))}<div class="small muted" style="text-transform:none;letter-spacing:0;font-weight:400">${esc(ROLE_L(p.role))}</div></th>`).join("")}</tr>
+  ${m.dimensions.map(d => `<tr><td colspan="2" style="background:var(--mint2)"><b>${esc(d.name)}</b></td>${m.comparators.map(p => { const s = m.scores[p.id].dimensions.find(x => x.dimension_id === d.id); return `<td class="h" style="background:var(--mint2)">${m.scoring && s && s.score != null ? s.score : ""}</td>`; }).join("")}</tr>
+    ${m.criteria.filter(c => c.dimension_id === d.id).map(c => `<tr><td style="padding-inline-start:22px">${esc(c.name)}</td><td class="small muted">${esc(AT(c.assessment_type))}${c.is_scored ? " · wt " + c.weight : " · not scored"}</td>
+      ${m.comparators.map(p => { const x = m.cells[c.id + ":" + p.id]; return `<td class="h ${cls(x)}" style="${x.text ? "font-weight:400;font-size:12px;text-align:start" : ""}" title="${x.comparable === false ? "Comparability checks not passed — not scored" : ""}">${esc(x.display)}${x.comparable === false ? " ⚠" : ""}</td>`; }).join("")}</tr>`).join("")}`).join("")}
+  ${m.scoring ? `<tr><td colspan="2"><b>Overall score</b><div class="small muted">coverage</div></td>${m.comparators.map(p => { const s = m.scores[p.id]; return `<td class="h"><div class="score">${s.overall ?? "n/a"}</div><div class="bar"><i style="width:${s.coverage}%"></i></div><div class="small muted">${s.coverage}%</div></td>`; }).join("")}</tr>` : ""}
   </table></div></div>`;
+}
+
+async function approveAll(e, sections) {
+  if (!confirm("Approve every pending item in this stage that passes the evidence rules? Items that fail are left pending with the reason.")) return;
+  const r = await post(`/api/engagements/${e.id}/content/approve-all`, { sections });
+  toast(`${r.approved} item(s) approved` + (r.skipped.length ? ` · ${r.skipped.length} need attention` : ""), !!r.skipped.length);
+  if (r.skipped.length) openDrawer(`<h2>Items left pending</h2><p class="sub">These could not be approved automatically. Edit them, link accepted evidence, or reject them.</p>
+    <table class="t"><tr><th>Item</th><th>Reason</th></tr>${r.skipped.map(x => `<tr><td>#${x.id} ${esc(x.title || "")}</td><td class="small">${esc(x.reason)}</td></tr>`).join("")}</table>
+    <div class="row" style="margin-top:12px"><button class="btn" onclick="closeDrawer()">Close</button></div>`);
+  else reload();
 }
 
 function itemsHtml(items, ed) {
@@ -447,7 +523,7 @@ function itemsHtml(items, ed) {
         ${i.reviewer ? `<span class="small muted">Reviewed by ${esc(i.reviewer)}</span>` : ""}</div>
       <div class="it-x">${esc(i.text)}</div>
       ${i.assumptions ? `<div class="small muted" style="margin-top:4px">Assumptions / conditions: ${esc(i.assumptions)}</div>` : ""}
-      <div class="it-f"><span class="small muted">Evidence:</span>${i.evidence_ids.length ? i.evidence_ids.map(c => evChip(i.evidence.find(x => x.code === c), c)).join("") : `<span class="small ${["verified_fact", "benchmark_comparison"].includes(i.content_type) ? "" : "muted"}" style="${["verified_fact", "benchmark_comparison"].includes(i.content_type) ? "color:var(--bad)" : ""}">none linked</span>`}
+      <div class="it-f">${i.citation ? `<span class="small" style="color:var(--teal);font-weight:600" title="APA in-text citation used in the report">${esc(i.citation)}</span>` : ""}<span class="small muted">Evidence:</span>${i.evidence_ids.length ? i.evidence_ids.map(c => evChip(i.evidence.find(x => x.code === c), c)).join("") : `<span class="small ${["verified_fact", "benchmark_comparison"].includes(i.content_type) ? "" : "muted"}" style="${["verified_fact", "benchmark_comparison"].includes(i.content_type) ? "color:var(--bad)" : ""}">none linked</span>`}
         <div class="sp"></div>
         ${E ? `<button class="btn sm" data-edit="${i.id}">Edit</button>` : ""}
         ${R && i.status !== "approved" && i.content_type !== "research_gap" ? `<button class="btn sm ok" data-ist="approved" data-id="${i.id}">Approve</button>` : ""}
@@ -483,32 +559,38 @@ async function stSynthesis(box, e, ed) {
   const sec = s => items.filter(i => i.section === s);
   box.innerHTML = `
   <div class="card row"><div><h2 style="margin:0">Insights, lessons & recommendations</h2><div class="small muted">AI synthesis and interpretation are labelled and kept separate from sourced facts. Human judgement is mandatory for client recommendations.</div></div><div class="sp"></div>
-    ${ed && can("run_ai") ? `<button class="btn ai" id="genS">Synthesise with AI</button>` : ""}${ed && can("edit") ? `<button class="btn" id="addRec">+ Add recommendation</button>` : ""}</div>
+    ${ed && can("run_ai") ? `<button class="btn ai" id="genS">Synthesise with AI</button>` : ""}${ed && can("edit") ? `<button class="btn" id="addRec">+ Add recommendation</button>` : ""}
+    ${ed && can("review_content") && items.some(i => ["lesson", "recommendation", "limitation"].includes(i.section) && ["pending", "open_gap"].includes(i.status)) ? `<button class="btn ok" id="apAllS">✓ Approve all</button>` : ""}</div>
+  <div class="legend" style="flex-wrap:wrap">${Object.entries(TYPES).map(([k, v]) => `<span class="chip ct-${k}">${v}</span>`).join(" ")}</div>
   <div class="sec-h"><h3>Lessons learned</h3>${chip(sec("lesson").length)}</div>${itemsHtml(sec("lesson"), ed) || `<div class="card empty small">None yet.</div>`}
   <div class="sec-h"><h3>Client implications & recommendation options</h3>${chip(sec("recommendation").length)}</div>${itemsHtml(sec("recommendation"), ed) || `<div class="card empty small">None yet.</div>`}
   <div class="sec-h"><h3>Limitations & research gaps</h3>${chip(sec("limitation").length)}</div>${itemsHtml(sec("limitation"), ed) || `<div class="card empty small">None yet.</div>`}`;
   const g = $("#genS"); if (g) g.onclick = async () => { await runJob(`/api/engagements/${e.id}/ai/synthesis`, {}, "Synthesising insights"); reload(); };
+  const aa = $("#apAllS"); if (aa) aa.onclick = () => approveAll(e, ["lesson", "recommendation", "limitation"]);
   const a = $("#addRec"); if (a) a.onclick = async () => { const t = prompt("Recommendation text:"); if (t) { await post(`/api/engagements/${e.id}/content`, { section: "recommendation", content_type: "client_implication", title: "Consultant recommendation", text: t }); reload(); } };
   bindItems(box, e);
 }
 
 /* ---- Stage 5: deliverable */
 async function stDeliverable(box, e, ed) {
-  const [items, refs] = await Promise.all([api(`/api/engagements/${e.id}/content`), api(`/api/engagements/${e.id}/references`)]);
+  const [ol, refs] = await Promise.all([api(`/api/engagements/${e.id}/report`), api(`/api/engagements/${e.id}/references`)]);
   const st = e.storyline || {};
-  const byId = Object.fromEntries(items.map(i => [i.id, i]));
+  const cite = {}; refs.forEach(r => r.codes.forEach(c => (cite[c] = r.intext)));
+  const cites = ids => [...new Set((ids || []).map(c => cite[c]).filter(Boolean))].map(x => x.slice(1, -1)).join("; ");
+  const bullets = xs => (xs || []).length ? `<ul class="story">${xs.map(x => `<li>${esc(x.text)} ${cites(x.evidence_ids) ? `<span class="small" style="color:var(--teal)">(${esc(cites(x.evidence_ids))})</span>` : ""}</li>`).join("")}</ul>` : "";
   box.innerHTML = `
-  <div class="card row"><div><h2 style="margin:0">Build the deliverable</h2><div class="small muted">Storyline built only from approved content. No new facts are introduced to strengthen the story.</div></div><div class="sp"></div>
-    ${ed && can("run_ai") ? `<button class="btn ai" id="genD">${st.slides ? "Rebuild" : "Build"} storyline with AI</button>` : ""}
-    <a class="btn pri" href="/api/engagements/${e.id}/export.pptx">⬇ Download PPTX</a></div>
+  <div class="card row"><div><h2 style="margin:0">Standard benchmarking report</h2><div class="small muted">Fixed structure, dynamic content. Only approved content is used; every material statement carries an APA in-text citation.</div></div><div class="sp"></div>
+    ${ed && can("run_ai") ? `<button class="btn ai" id="genD">${(st.executive_summary || []).length ? "Redraft" : "Draft"} executive summary & conclusions</button>` : ""}
+    <a class="btn pri" href="/api/engagements/${e.id}/export.docx">⬇ Report (Word)</a><a class="btn" href="/api/engagements/${e.id}/export.pptx">⬇ Slides (PPTX)</a></div>
+  <div class="card"><h2>Report structure</h2>
+    ${ol.sections.map((x, k) => `<div class="slide"><div class="n">${k + 1}</div><div><b>${esc(x.section)}</b><div class="small muted">${esc(x.auto || `${x.items} approved item(s)`)}</div></div>
+      <div>${x.ready ? chip("Ready", "ok") : chip("No approved content", "bad")}</div></div>`).join("")}</div>
   <div class="grid2">
-    <div class="card"><h2>Executive summary</h2>${(st.executive_summary || []).length ? `<ul class="story">${st.executive_summary.map(x => `<li>${esc(x.text)} ${(x.evidence_ids || []).map(c => `<span class="chip ev P1">${esc(c)}</span>`).join(" ")}</li>`).join("")}</ul>` : `<div class="empty small">Build the storyline to draft the executive summary.</div>`}</div>
-    <div class="card"><h2>Slide outline</h2>${(st.slides || []).map((s, k) => `<div class="slide"><div class="n">${k + 3}</div><div><b>${esc(s.title)}</b><div class="small muted">${esc(s.message || "")} · visual: ${esc(s.visual || "")}</div>
-      <div class="small">${(s.item_ids || []).map(id => byId[id] ? `<span class="chip ct-${byId[id].content_type}" title="${esc(byId[id].text)}">#${id}</span>` : "").join(" ")}</div></div>
-      <div>${(s.item_ids || []).some(id => byId[id] && byId[id].status !== "approved" && byId[id].status !== "open_gap") ? chip("unapproved item", "bad") : ""}</div></div>`).join("") || `<div class="empty small">No storyline yet.</div>`}</div></div>
-  <div class="card"><h2>References <span class="small muted">(generated automatically from accepted evidence cited in approved content)</span></h2>
-    <ol class="small">${refs.map(r => `<li><span class="mono">${esc(r.code)}</span> ${esc(r.text)}</li>`).join("") || "<span class='muted'>No cited references yet.</span>"}</ol></div>`;
-  const g = $("#genD"); if (g) g.onclick = async () => { await runJob(`/api/engagements/${e.id}/ai/storyline`, {}, "Building storyline"); reload(); };
+    <div class="card"><h2>Executive summary</h2>${bullets(st.executive_summary) || `<div class="empty small">Draft the executive summary from the approved content.</div>`}</div>
+    <div class="card"><h2>Conclusions</h2>${bullets(st.conclusions) || `<div class="empty small">Drafted together with the executive summary.</div>`}</div></div>
+  <div class="card"><h2>References <span class="small muted">APA 7 · generated from accepted evidence cited in approved content</span></h2>
+    ${refs.map(r => `<p class="small" style="padding-inline-start:28px;text-indent:-28px;margin:0 0 8px">${esc(r.ref)} <span class="muted mono">${esc(r.codes.join(", "))}</span></p>`).join("") || "<span class='muted'>No cited references yet.</span>"}</div>`;
+  const g = $("#genD"); if (g) g.onclick = async () => { await runJob(`/api/engagements/${e.id}/ai/storyline`, {}, "Drafting executive summary"); reload(); };
 }
 
 /* ---- Stage 6: QA */
@@ -523,6 +605,8 @@ async function stQA(box, e, ed) {
     <div class="kpi" style="border-left:4px solid #E0A800"><b>${r.counts.major}</b><span>Major</span></div>
     <div class="kpi" style="border-left:4px solid var(--blue)"><b>${r.counts.minor}</b><span>Minor</span></div>
     <div class="kpi" style="border-left:4px solid ${r.blocking ? "var(--bad)" : "var(--ok)"}"><b>${r.blocking ? "Blocked" : "Clear"}</b><span>Release status</span></div></div>
+  <div class="card"><h2>Release checks</h2><div class="grid3">${(r.categories || []).map(c => `<div class="kpi" style="border-inline-start:4px solid ${c.critical ? "var(--bad)" : c.open ? "#E0A800" : "var(--ok)"}">
+    <b style="font-size:15px">${esc(c.name)}</b><span>${c.open ? `${c.open} open issue(s)${c.critical ? ` · ${c.critical} critical` : ""}` : "✓ Passed"}</span><div class="small muted mono">${c.rules.join(" · ")}</div></div>`).join("")}</div></div>
   <div class="card"><h2>Open issues</h2><table class="t"><tr><th>Rule</th><th>Severity</th><th>Issue</th><th>Source</th><th></th></tr>
     ${open.map(i => `<tr><td class="mono">${esc(i.rule)}</td><td>${chip(i.severity, i.severity === "critical" ? "bad" : i.severity === "major" ? "warn" : "info")}</td><td>${esc(i.message)}</td><td class="small">${i.source === "ai" ? "AI reviewer" : "Rule engine"}</td>
     <td>${i.source === "ai" && ed && can("qa") ? `<button class="btn sm" data-res="${i.id}">Resolve</button>` : `<a class="small" href="#/e/${e.id}/${i.entity_type === "evidence" || i.entity_type === "task" || i.entity_type === "question" ? "research" : "synthesis"}">go to →</a>`}</td></tr>`).join("") || `<tr><td colspan="5" class="empty">No open issues 🎉</td></tr>`}</table></div>
